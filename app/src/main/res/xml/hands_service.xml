@@ -5,4 +5,4 @@
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
-    android:description="语音管家用它来点击、输入和滑动屏幕，代替手指操作手机。" />
+    android:description="@string/hands_desc" />
