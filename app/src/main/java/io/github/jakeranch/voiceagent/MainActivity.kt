@@ -64,7 +64,13 @@ class MainActivity : Activity() {
             }
         })
         setContentView(ScrollView(this).apply { addView(root) })
-        refresh()
+        refreshLoop()
+    }
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private fun refreshLoop() {
+        handler.postDelayed({ if (!isFinishing) { refresh(); refreshLoop() } }, 1_000)
     }
 
     private fun saveAndStart() {
@@ -82,7 +88,8 @@ class MainActivity : Activity() {
     private fun refresh() {
         val svc = if (AgentService.isRunning) "运行中" else "未运行"
         val asr = LocalAsr.state + (LocalAsr.lastError?.let { "（$it）" } ?: "")
-        status.text = "语音服务：$svc\n本地识别：$asr\n\n唤醒词：小助手\n功能：本地唤醒 + 本地识别 + DeepSeek 大脑 + 无障碍操作（后续版本逐步加入）"
+        status.text = "语音服务：$svc\n本地识别：$asr\n\n" +
+            "──── 事件日志 ────\n" + LogBus.snapshot().ifBlank { "（暂无）" }
     }
 
     companion object {

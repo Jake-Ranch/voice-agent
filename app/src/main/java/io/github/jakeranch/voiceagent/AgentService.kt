@@ -83,7 +83,9 @@ class AgentService : Service() {
             // 1) 等唤醒词
             val wakeWav = recordUtterance(maxIdleSeconds = 60) ?: continue
             val wakeText = LocalAsr.transcribe(wakeWav) ?: continue
+            LogBus.log("听到：$wakeText")
             if (WAKE_WORDS.none { wakeText.contains(it) }) continue
+            LogBus.log("唤醒成功")
 
             // 2) 唤醒反馈，稍等 TTS 播完再收音，避免麦克风录到自己的声音
             speaker.speak("在的")
@@ -91,16 +93,19 @@ class AgentService : Service() {
             val cmdWav = recordUtterance(maxIdleSeconds = 20) ?: continue
             val cmd = LocalAsr.transcribe(cmdWav) ?: continue
             if (cmd.isBlank()) continue
+            LogBus.log("指令：$cmd")
 
             // 3) DeepSeek 决策
             val key = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
                 .getString("deepseek_key", "").orEmpty()
             if (key.isBlank()) {
+                LogBus.log("缺少 DeepSeek key")
                 speaker.speak("请先在应用里填写 DeepSeek 密钥")
                 continue
             }
             val screen = HandsService.instance?.dumpText() ?: ""
             val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen") ?: continue
+            LogBus.log("大脑：$reply")
 
             // 4) 执行
             execute(reply)
