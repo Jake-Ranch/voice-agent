@@ -74,9 +74,13 @@ class AgentService : Service() {
     private suspend fun loop() {
         LocalAsr.ensureInit(this)
         speaker = Speaker(this)
+        LogBus.log("语音服务已启动")
         while (true) {
             updateNotification()
             if (!LocalAsr.isReady) {
+                if (LocalAsr.state == "failed") {
+                    LogBus.log("模型加载失败：" + (LocalAsr.lastError ?: "未知"))
+                }
                 delay(3_000)
                 continue
             }
@@ -104,7 +108,12 @@ class AgentService : Service() {
                 continue
             }
             val screen = HandsService.instance?.dumpText() ?: ""
-            val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen") ?: continue
+            val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen")
+            if (reply == null) {
+                LogBus.log("大脑无回应（key 或网络问题）")
+                speaker.speak("大脑没有回应，请检查密钥和网络")
+                continue
+            }
             LogBus.log("大脑：$reply")
 
             // 4) 执行
@@ -120,6 +129,9 @@ class AgentService : Service() {
             return
         }
         val hands = HandsService.instance
+        if (hands == null && obj.optString("action") !in setOf("answer", "done")) {
+            LogBus.log("无障碍未开启")
+        }
         when (obj.optString("action")) {
             "answer", "done" -> speaker.speak(obj.optString("text"))
             "tap_text" -> if (hands == null || !hands.tapByText(obj.optString("text"))) {
