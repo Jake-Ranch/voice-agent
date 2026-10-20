@@ -85,8 +85,9 @@ class AgentService : Service() {
             val wakeText = LocalAsr.transcribe(wakeWav) ?: continue
             if (WAKE_WORDS.none { wakeText.contains(it) }) continue
 
-            // 2) 唤醒反馈，听指令
+            // 2) 唤醒反馈，稍等 TTS 播完再收音，避免麦克风录到自己的声音
             speaker.speak("在的")
+            delay(1_500)
             val cmdWav = recordUtterance(maxIdleSeconds = 20) ?: continue
             val cmd = LocalAsr.transcribe(cmdWav) ?: continue
             if (cmd.isBlank()) continue
@@ -103,7 +104,7 @@ class AgentService : Service() {
 
             // 4) 执行
             execute(reply)
-            delay(2_000)
+            delay(3_000) // 等朗读结束再回到唤醒监听，避免录到自己的回复
         }
     }
 
