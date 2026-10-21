@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -129,7 +130,7 @@ class HandsService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < 30) return false
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
-        return focused.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+        return focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
     }
 
     /** 按名称打开应用（只支持有主入口的应用）。返回 null 表示成功，否则为原因。 */

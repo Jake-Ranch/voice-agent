@@ -165,7 +165,7 @@ class AgentService : Service() {
             } else {
                 ""
             }
-            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n$hint当前屏幕文本：\n$screen"
+            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n${hint}当前屏幕文本：\n$screen"
             val reply = Brain.ask(key, prompt)
             if (reply == null) {
                 LogBus.log("大脑无回应（key 或网络问题）")
