@@ -118,26 +118,35 @@ class HandsService : AccessibilityService() {
 
     /** 按名称打开应用（只支持有主入口的应用）。返回 null 表示成功，否则为原因。 */
     fun openApp(labelOrPkg: String): String? {
+        // 剥掉可能混进来的动词和"应用"后缀
         val raw = labelOrPkg.trim()
+            .replace(Regex("^(请|帮我|给我)?(打开|启动|运行|进入)"), "")
+            .replace(Regex("(应用|app)$", RegexOption.IGNORE_CASE), "")
+            .trim()
+        if (raw.isEmpty()) return "没有指定应用名"
         val q = NAME_ALIASES[raw] ?: raw
+        LogBus.log("openApp: raw=$raw q=$q")
         val pm = packageManager
+
+        // 直接是包名
         if (q.contains('.') && pm.getLaunchIntentForPackage(q) != null) {
             return openClockIfNeeded(raw, q)
         }
-        for (app in pm.getInstalledApplications(0)) {
-            val label = pm.getApplicationLabel(app).toString()
+        // 按名称找（用 ACTION_MAIN/LAUNCHER 查询，比 getLaunchIntentForPackage 更可靠）
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val resolves = pm.queryIntentActivities(launcher, 0)
+        for (ri in resolves) {
+            val label = ri.loadLabel(pm).toString()
             if (label.contains(q, ignoreCase = true)) {
-                pm.getLaunchIntentForPackage(app.packageName)?.let {
-                    return openClockIfNeeded(raw, q)
-                } ?: return "「$raw」没有启动入口"
+                return openClockIfNeeded(raw, ri.activityInfo.packageName)
             }
         }
         return "找不到叫「$raw」的应用"
     }
 
     /** 闹钟/时钟类指令直接进系统闹钟设置页，而不是停在时钟首页。 */
-    private fun openClockIfNeeded(raw: String, resolved: String): String? {
-        if (resolved == "时钟" || raw.contains("闹钟") || raw.contains("秒表") || raw.contains("计时器")) {
+    private fun openClockIfNeeded(raw: String, pkg: String): String? {
+        if (pkg.contains("clock") || raw.contains("闹钟") || raw.contains("秒表") || raw.contains("计时器") || pkg.contains("deskclock")) {
             return try {
                 startActivity(
                     Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
@@ -145,11 +154,15 @@ class HandsService : AccessibilityService() {
                 )
                 null
             } catch (e: Exception) {
-                launch(packageManager.getLaunchIntentForPackage(resolved)!!)
-                null
+                openByPackage(pkg)
             }
         }
-        val intent = packageManager.getLaunchIntentForPackage(resolved) ?: return "「$raw」没有启动入口"
+        return openByPackage(pkg)
+    }
+
+    private fun openByPackage(pkg: String): String? {
+        val intent = packageManager.getLaunchIntentForPackage(pkg)
+            ?: return "「$pkg」没有启动入口"
         launch(intent)
         return null
     }

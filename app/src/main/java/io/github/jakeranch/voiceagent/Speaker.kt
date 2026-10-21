@@ -18,8 +18,11 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
             tts.language = Locale.CHINESE
             ready = true
             LogBus.log("朗读引擎就绪")
+            // 预热：空播一段，消除首次合成的明显延迟
+            runCatching { tts.speak("", TextToSpeech.QUEUE_FLUSH, null, "voice_agent_warm") }
         } else {
             LogBus.log("朗读引擎初始化失败（状态码 $status），回复可能没声音")
+            ChatBus.agent("未检测到系统中文语音引擎，回复可能没有声音")
         }
     }
 

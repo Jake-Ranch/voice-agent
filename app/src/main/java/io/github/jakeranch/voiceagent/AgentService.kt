@@ -159,6 +159,7 @@ class AgentService : Service() {
         }
         LogBus.log("大脑：$reply")
         execute(reply)
+        beep(ack = false) // 完成提示音
     }
 
     private fun execute(reply: String) {
@@ -242,12 +243,12 @@ class AgentService : Service() {
         }
     }
 
-    /** 唤醒提示音：柔和、短促。 */
-    private fun beep() {
+    /** 唤醒提示音：柔和、短促（用媒体流，MIUI 上提示流常被静音）。 */
+    private fun beep(ack: Boolean = true) {
         if (!speakerEnabled()) return
         runCatching {
-            val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60)
-            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+            val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
+            tone.startTone(if (ack) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_NACK, 150)
             scope.launch {
                 delay(400)
                 runCatching { tone.release() }
