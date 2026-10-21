@@ -178,6 +178,15 @@ class AgentService : Service() {
                 beep(ack = false)
                 return
             }
+            if (action == "set_alarm") {
+                // 闹钟一步到位，无论成败都结束本轮，避免死循环重试
+                val minutes = obj.optInt("minutes", 0)
+                val msg = if (minutes <= 0) "没听懂要多久后提醒" else setAlarm(minutes)
+                ChatBus.agent(msg)
+                speaker.speak(msg)
+                beep(ack = false)
+                return
+            }
             val human = performStep(obj)
             ChatBus.agent(human)
             history.append("步骤$step：$human\n")
@@ -192,14 +201,9 @@ class AgentService : Service() {
     /** 执行一个动作，返回人类可读的描述（不进语音，只在气泡显示）。 */
     private fun performStep(obj: JSONObject): String {
         val hands = HandsService.instance
-        val needsHands = obj.optString("action") !in setOf("answer", "done", "set_alarm")
+        val needsHands = obj.optString("action") !in setOf("answer", "done")
         if (needsHands && hands == null) return "请先开启无障碍权限（设置里的按钮）"
         return when (obj.optString("action")) {
-            "set_alarm" -> {
-                val minutes = obj.optInt("minutes", 0)
-                if (minutes <= 0) "没听懂要多久后提醒"
-                else setAlarm(minutes)
-            }
             "tap_text" -> {
                 val t = obj.optString("text")
                 if (hands?.tapByText(t) == true) "已点击「$t」" else "没有找到要点的按钮"
@@ -239,22 +243,54 @@ class AgentService : Service() {
         }
     }
 
-    /** 设置 X 分钟后的闹钟（不依赖无障碍，直接预填系统闹钟）。 */
+    /**
+     * 设置 X 分钟后的闹钟。Android 10+ 禁止后台服务弹界面，所以：
+     * 1) 先试直接跳转；2) 被拦就发一条通知，用户点一下即可打开预填好的闹钟。
+     */
     private fun setAlarm(minutes: Int): String {
         val cal = java.util.Calendar.getInstance()
         cal.add(java.util.Calendar.MINUTE, minutes)
+        val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        val mm = cal.get(java.util.Calendar.MINUTE)
         val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
-            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, cal.get(java.util.Calendar.HOUR_OF_DAY))
-            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, cal.get(java.util.Calendar.MINUTE))
+            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hh)
+            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, mm)
             .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "语音管家提醒")
             .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return try {
+        val ok = try {
             startActivity(intent)
-            val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
-            val mm = cal.get(java.util.Calendar.MINUTE)
-            "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+            true
         } catch (e: Exception) {
+            LogBus.log("setAlarm 直接跳转被拦：${e.message}")
+            false
+        }
+        if (ok) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        // 通知兜底：点通知 = 用户主动操作，系统允许打开界面
+        return try {
+            val pi = PendingIntent.getActivity(
+                this, 9, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                nm.getNotificationChannel("voice_agent_alarm") == null
+            ) {
+                nm.createNotificationChannel(
+                    NotificationChannel("voice_agent_alarm", "闹钟提醒", NotificationManager.IMPORTANCE_HIGH),
+                )
+            }
+            val n = Notification.Builder(this, "voice_agent_alarm")
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle("点击设置 $minutes 分钟后的闹钟")
+                .setContentText("目标时间 $hh:$mm")
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(9, n)
+            "系统拦了自动跳转，已发一条通知：点一下通知即可设好闹钟"
+        } catch (e: Exception) {
+            LogBus.log("setAlarm 通知兜底失败：${e.message}")
             "设置闹钟失败"
         }
     }
