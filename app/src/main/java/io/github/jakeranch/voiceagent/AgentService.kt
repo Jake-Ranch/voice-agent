@@ -406,7 +406,7 @@ class AgentService : Service() {
         val WAKE_WORDS = listOf("小助手", "小管家", "管家")
 
         /** 多步任务最大步数（超过则先停下来）。 */
-        private const val MAX_STEPS = 6
+        private const val MAX_STEPS = 20
 
         @Volatile
         var isRunning: Boolean = false

@@ -38,12 +38,20 @@ class HandsService : AccessibilityService() {
     }
 
     private fun collect(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {
-        if (depth > 12 || sb.length > 8000) return
+        if (depth > 12 || sb.length > 12000) return
         val text = node.text?.toString()?.trim()
         val desc = node.contentDescription?.toString()?.trim()
         if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
+            // 附带中心坐标（0-1 比例），让大脑能用 tap_xy 精确点击
+            val r = android.graphics.Rect()
+            node.getBoundsInScreen(r)
+            val w = resources.displayMetrics.widthPixels.toFloat()
+            val h = resources.displayMetrics.heightPixels.toFloat()
+            val cx = ((r.left + r.right) / 2f / w).coerceIn(0f, 1f)
+            val cy = ((r.top + r.bottom) / 2f / h).coerceIn(0f, 1f)
             sb.append("  ".repeat(depth))
                 .append(if (!text.isNullOrEmpty()) text else desc)
+                .append(String.format(" (%.2f,%.2f)", cx, cy))
                 .append('\n')
         }
         for (i in 0 until node.childCount) {
