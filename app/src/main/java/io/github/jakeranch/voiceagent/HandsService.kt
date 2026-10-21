@@ -116,24 +116,42 @@ class HandsService : AccessibilityService() {
 
     fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
-    /** 按名称打开应用（只支持有主入口的应用）。 */
-    fun openApp(labelOrPkg: String): Boolean {
+    /** 按名称打开应用（只支持有主入口的应用）。返回 null 表示成功，否则为原因。 */
+    fun openApp(labelOrPkg: String): String? {
+        val raw = labelOrPkg.trim()
+        val q = NAME_ALIASES[raw] ?: raw
         val pm = packageManager
-        val query = labelOrPkg.trim()
-        if (query.contains('.') && pm.getLaunchIntentForPackage(query) != null) {
-            launch(pm.getLaunchIntentForPackage(query)!!)
-            return true
+        if (q.contains('.') && pm.getLaunchIntentForPackage(q) != null) {
+            return openClockIfNeeded(raw, q)
         }
         for (app in pm.getInstalledApplications(0)) {
             val label = pm.getApplicationLabel(app).toString()
-            if (label.contains(query, ignoreCase = true)) {
+            if (label.contains(q, ignoreCase = true)) {
                 pm.getLaunchIntentForPackage(app.packageName)?.let {
-                    launch(it)
-                    return true
-                }
+                    return openClockIfNeeded(raw, q)
+                } ?: return "「$raw」没有启动入口"
             }
         }
-        return false
+        return "找不到叫「$raw」的应用"
+    }
+
+    /** 闹钟/时钟类指令直接进系统闹钟设置页，而不是停在时钟首页。 */
+    private fun openClockIfNeeded(raw: String, resolved: String): String? {
+        if (resolved == "时钟" || raw.contains("闹钟") || raw.contains("秒表") || raw.contains("计时器")) {
+            return try {
+                startActivity(
+                    Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                null
+            } catch (e: Exception) {
+                launch(packageManager.getLaunchIntentForPackage(resolved)!!)
+                null
+            }
+        }
+        val intent = packageManager.getLaunchIntentForPackage(resolved) ?: return "「$raw」没有启动入口"
+        launch(intent)
+        return null
     }
 
     private fun launch(intent: Intent) {
@@ -144,5 +162,14 @@ class HandsService : AccessibilityService() {
     companion object {
         @Volatile
         var instance: HandsService? = null
+
+        /** 常见叫法 → 应用实际名称。 */
+        private val NAME_ALIASES = mapOf(
+            "闹钟" to "时钟",
+            "秒表" to "时钟",
+            "计时器" to "时钟",
+            "相册" to "图库",
+            "照片" to "图库",
+        )
     }
 }

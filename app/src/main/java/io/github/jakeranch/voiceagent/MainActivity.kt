@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +15,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -23,19 +25,30 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 /**
- * 极简主界面：状态圆点 + 对话框（识别文字、管家回复、事件）+ key 输入 + 开关。
+ * 主界面：
+ * 顶栏：状态圆点 + 扬声器开关 / 日志 / 设置（齿轮）；
+ * 中部：微信风聊天气泡（我方绿泡在右，管家灰白泡在左）；
+ * 底部：语音/键盘输入切换 + 文本框。
  */
 class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var dot: View
     private lateinit var stateText: TextView
-    private lateinit var chat: TextView
+    private lateinit var speakerBtn: TextView
+    private lateinit var chatContainer: LinearLayout
+    private lateinit var settingsPanel: LinearLayout
+    private lateinit var logPanel: TextView
     private lateinit var keyInput: EditText
+    private lateinit var inputToggle: TextView
+    private lateinit var textInput: EditText
+    private lateinit var inputRow: LinearLayout
+    private var keyboardMode = false
+    private var lastChatCount = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 麦克风权限必须运行时请求，否则收音静默失败
+
         val need = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -48,32 +61,47 @@ class MainActivity : Activity() {
             ActivityCompat.requestPermissions(this, need.toTypedArray(), REQ_PERMS)
         }
 
-        val pad = (16 * resources.displayMetrics.density).toInt()
+        val pad = (14 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad * 2, pad, pad)
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(237, 237, 237))
         }
 
-        // 状态行：圆点 + 文字
-        val row = LinearLayout(this).apply {
+        // ── 顶栏 ──
+        val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad, pad / 2, pad, pad / 2)
+            setBackgroundColor(Color.WHITE)
         }
-        val dotSize = (16 * resources.displayMetrics.density).toInt()
         dot = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dotSize, dotSize)
+            layoutParams = LinearLayout.LayoutParams((16 * resources.displayMetrics.density).toInt(), (16 * resources.displayMetrics.density).toInt())
         }
-        row.addView(dot)
+        top.addView(dot)
         stateText = TextView(this).apply {
-            textSize = 16f
+            textSize = 15f
             setTextColor(Color.BLACK)
-            setPadding(pad, 0, 0, 0)
+            setPadding(pad / 2, 0, 0, 0)
         }
-        row.addView(stateText)
-        root.addView(row)
+        top.addView(stateText)
+        val spacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+        top.addView(spacer)
+        speakerBtn = navIcon("🔊")
+        top.addView(speakerBtn)
+        top.addView(navIcon("📋") { logPanel.visibility = if (logPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
+        top.addView(navIcon("⚙️") { settingsPanel.visibility = if (settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
+        root.addView(top)
 
-        root.addView(TextView(this).apply {
+        // ── 设置面板（点齿轮显示）──
+        settingsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(Color.WHITE)
+        }
+        settingsPanel.addView(TextView(this).apply {
             text = "DeepSeek API Key（只存本机）"
             textSize = 14f
             setTextColor(Color.DKGRAY)
@@ -82,45 +110,116 @@ class MainActivity : Activity() {
             setText(getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("deepseek_key", ""))
             setTextColor(Color.BLACK)
         }
-        root.addView(keyInput)
-
-        root.addView(Button(this).apply {
+        settingsPanel.addView(keyInput)
+        settingsPanel.addView(Button(this).apply {
             text = "保存 key 并开启语音管家"
             setOnClickListener { saveAndStart() }
         })
-        root.addView(Button(this).apply {
-            text = "停止"
+        settingsPanel.addView(Button(this).apply {
+            text = "停止语音管家"
             setOnClickListener {
                 AgentService.stop(this@MainActivity)
                 refresh()
             }
         })
-        root.addView(Button(this).apply {
+        settingsPanel.addView(Button(this).apply {
             text = "开启无障碍操作权限"
             setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         })
+        root.addView(settingsPanel)
 
-        // 对话框：识别文字与管家回复都在这里
-        chat = TextView(this).apply {
-            textSize = 15f
-            setTextColor(Color.BLACK)
-            setLineSpacing(4f, 1f)
-            typeface = android.graphics.Typeface.MONOSPACE
+        // ── 日志面板（点日志图标显示，调试用）──
+        logPanel = TextView(this).apply {
+            visibility = View.GONE
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+            typeface = Typeface.MONOSPACE
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(Color.rgb(250, 250, 240))
         }
-        root.addView(chat)
+        root.addView(logPanel)
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        // ── 聊天区（气泡）──
+        chatContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        val chatScroll = ScrollView(this).apply {
+            addView(chatContainer)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
+            )
+        }
+        root.addView(chatScroll)
+
+        // ── 底部输入行 ──
+        inputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad, pad / 2, pad, pad / 2)
+            setBackgroundColor(Color.WHITE)
+        }
+        inputToggle = TextView(this).apply {
+            text = "🎤"
+            textSize = 24f
+            setPadding(pad, 0, pad, 0)
+            setOnClickListener { toggleInputMode() }
+        }
+        inputRow.addView(inputToggle)
+        textInput = EditText(this).apply {
+            hint = "输入指令，回车发送"
+            setTextColor(Color.BLACK)
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    sendText()
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        inputRow.addView(textInput)
+        val sendBtn = Button(this).apply {
+            text = "发送"
+            setOnClickListener { sendText() }
+        }
+        inputRow.addView(sendBtn)
+        root.addView(inputRow)
+        toggleInputMode()
+
+        setContentView(root)
         refreshLoop()
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    private fun navIcon(emoji: String, onClick: (() -> Unit)? = null): TextView {
+        val pad = (10 * resources.displayMetrics.density).toInt()
+        return TextView(this).apply {
+            text = emoji
+            textSize = 22f
+            setPadding(pad, pad / 2, pad, pad / 2)
+            if (onClick != null) setOnClickListener { onClick() }
+        }
+    }
+
+    private fun toggleInputMode() {
+        keyboardMode = !keyboardMode
+        inputToggle.text = if (keyboardMode) "⌨️" else "🎤"
+        textInput.visibility = if (keyboardMode) View.VISIBLE else View.GONE
+    }
+
+    private fun sendText() {
+        val text = textInput.text.toString().trim()
+        if (text.isEmpty()) return
+        textInput.setText("")
+        AgentService.submitText(text)
+        if (!AgentService.isRunning) {
+            AgentService.start(this)
+        }
         refresh()
     }
 
@@ -148,7 +247,68 @@ class MainActivity : Activity() {
         }
         dot.background = gd
         stateText.text = " " + StateBus.label
-        chat.text = LogBus.snapshot().ifBlank { "（暂无消息）" }
+
+        val speakerOn = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean("speaker_enabled", true)
+        speakerBtn.text = if (speakerOn) "🔊" else "🔇"
+        speakerBtn.setOnClickListener {
+            val on = !getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean("speaker_enabled", true)
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean("speaker_enabled", on).apply()
+            refresh()
+        }
+
+        if (logPanel.visibility == View.VISIBLE) {
+            logPanel.text = LogBus.snapshot().ifBlank { "（暂无调试日志）" }
+        }
+
+        // 气泡重建：仅当消息数变化
+        val msgs = ChatBus.snapshot()
+        if (msgs.size != lastChatCount) {
+            lastChatCount = msgs.size
+            chatContainer.removeAllViews()
+            val density = resources.displayMetrics.density
+            for (m in msgs) {
+                val isUser = m is ChatBus.Msg.User
+                val text = when (m) {
+                    is ChatBus.Msg.User -> m.text
+                    is ChatBus.Msg.Agent -> m.text
+                }
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = if (isUser) Gravity.END else Gravity.START
+                    setPadding(0, (4 * density).toInt(), 0, (4 * density).toInt())
+                }
+                val bubble = TextView(this).apply {
+                    this.text = text
+                    textSize = 16f
+                    setTextColor(if (isUser) Color.WHITE else Color.BLACK)
+                    setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+                    maxWidth = (resources.displayMetrics.widthPixels * 0.72).toInt()
+                    background = GradientDrawable().apply {
+                        cornerRadius = 12 * density
+                        setColor(if (isUser) Color.rgb(7, 193, 96) else Color.WHITE)
+                    }
+                }
+                row.addView(bubble)
+                chatContainer.addView(row)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        refresh()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     companion object {

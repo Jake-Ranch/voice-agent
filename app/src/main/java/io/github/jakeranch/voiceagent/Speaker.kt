@@ -7,7 +7,8 @@ import java.util.Locale
 /** 系统 TTS 朗读（中文）。 */
 class Speaker(context: Context) : TextToSpeech.OnInitListener {
 
-    private val tts: TextToSpeech = TextToSpeech(context.applicationContext, this)
+    private val appContext = context.applicationContext
+    private val tts: TextToSpeech = TextToSpeech(appContext, this)
 
     @Volatile
     private var ready = false
@@ -24,6 +25,10 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
 
     fun speak(text: String) {
         if (!ready || text.isBlank()) return
+        // 扬声器开关禁用时不念出声音
+        val enabled = appContext.getSharedPreferences(MainActivity.PREFS, 0)
+            .getBoolean("speaker_enabled", true)
+        if (!enabled) return
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "voice_agent_tts")
     }
 

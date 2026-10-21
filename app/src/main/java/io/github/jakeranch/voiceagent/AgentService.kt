@@ -9,12 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.IBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -22,16 +25,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
- * 常驻语音管家：能量端点检测收音 → 本地识别 → 唤醒词匹配 →
- * 听指令 → DeepSeek 决策 → 无障碍执行 → TTS 朗读。
+ * 常驻语音管家：
+ * 文本指令队列 + 唤醒词（本地）→ 本地识别 → DeepSeek 决策 → 无障碍执行 → TTS 朗读。
+ * 用户可见内容进 ChatBus（气泡），调试内容进 LogBus（日志面板）。
  */
 class AgentService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var speaker: Speaker
-    private var loopJob: kotlinx.coroutines.Job? = null
+    private var loopJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -77,6 +82,12 @@ class AgentService : Service() {
         LogBus.log("语音服务已启动")
         while (true) {
             updateNotification()
+            // 0) 键盘输入的文本指令优先处理
+            val typed = textQueue.poll()
+            if (typed != null) {
+                processCommand(typed)
+                continue
+            }
             if (!LocalAsr.isReady) {
                 if (LocalAsr.state == "failed") {
                     StateBus.set(StateBus.State.FAULT)
@@ -85,117 +96,171 @@ class AgentService : Service() {
                 delay(3_000)
                 continue
             }
-            // 1) 等唤醒词
+            // 1) 等唤醒词（15 秒一片，中途可插入文本指令）
             StateBus.set(StateBus.State.IDLE)
-            val wakeWav = recordUtterance(maxIdleSeconds = 60) ?: continue
-            val wakeText = LocalAsr.transcribe(wakeWav) ?: continue
-            LogBus.log("听到：$wakeText")
-            if (WAKE_WORDS.none { wakeText.contains(it) }) continue
+            var wakeText: String? = null
+            for (i in 0 until 4) {
+                val t = textQueue.poll()
+                if (t != null) {
+                    processCommand(t)
+                    break
+                }
+                val wav = recordUtterance(maxIdleSeconds = 15)
+                val txt = wav?.let { LocalAsr.transcribe(it) }
+                if (!txt.isNullOrBlank()) {
+                    wakeText = txt
+                    break
+                }
+            }
+            val wake = wakeText ?: continue
+            LogBus.log("听到：$wake") // 调试日志，不进气泡
+            if (WAKE_WORDS.none { wake.contains(it) }) continue
             LogBus.log("唤醒成功")
 
-            // 2) 唤醒反馈，稍等 TTS 播完再收音，避免麦克风录到自己的声音
+            // 2) 唤醒：柔和短促提示音，进入倾听
+            beep()
             StateBus.set(StateBus.State.LISTENING)
             speaker.speak("在的")
-            delay(1_500)
-            val cmdWav = recordUtterance(maxIdleSeconds = 20) ?: continue
-            val cmd = LocalAsr.transcribe(cmdWav) ?: continue
-            if (cmd.isBlank()) continue
+            delay(1_200)
+            val cmdWav = recordUtterance(maxIdleSeconds = 20)
+            val cmd = cmdWav?.let { LocalAsr.transcribe(it) }
+            if (cmd.isNullOrBlank()) {
+                StateBus.set(StateBus.State.IDLE)
+                continue
+            }
+            ChatBus.user(cmd)
             LogBus.log("指令：$cmd")
-
-            // 3) DeepSeek 决策
-            StateBus.set(StateBus.State.WORKING)
-            LogBus.log("正在调用大模型…")
-            val key = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
-                .getString("deepseek_key", "").orEmpty()
-            if (key.isBlank()) {
-                LogBus.log("缺少 DeepSeek key")
-                speaker.speak("请先在应用里填写 DeepSeek 密钥")
-                continue
-            }
-            val screen = HandsService.instance?.dumpText() ?: ""
-            val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen")
-            if (reply == null) {
-                LogBus.log("大脑无回应（key 或网络问题）")
-                speaker.speak("大脑没有回应，请检查密钥和网络")
-                continue
-            }
-            LogBus.log("大脑：$reply")
-
-            // 4) 执行
-            execute(reply)
+            processCommand(cmd)
             StateBus.set(StateBus.State.IDLE)
-            delay(3_000) // 等朗读结束再回到唤醒监听，避免录到自己的回复
+            delay(2_500)
         }
+    }
+
+    private suspend fun processCommand(cmd: String) {
+        StateBus.set(StateBus.State.WORKING)
+        LogBus.log("正在调用大模型…")
+        val key = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+            .getString("deepseek_key", "").orEmpty()
+        if (key.isBlank()) {
+            LogBus.log("缺少 DeepSeek key")
+            val msg = "请先在设置里填写 DeepSeek 密钥"
+            ChatBus.agent(msg)
+            speaker.speak(msg)
+            return
+        }
+        val screen = HandsService.instance?.dumpText() ?: ""
+        val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen")
+        if (reply == null) {
+            LogBus.log("大脑无回应（key 或网络问题）")
+            val msg = "大脑没有回应，请检查密钥和网络"
+            ChatBus.agent(msg)
+            speaker.speak(msg)
+            return
+        }
+        LogBus.log("大脑：$reply")
+        execute(reply)
     }
 
     private fun execute(reply: String) {
         val obj = runCatching { JSONObject(reply.trim()) }.getOrNull()
         if (obj == null) {
-            LogBus.log("管家：$reply")
+            ChatBus.agent(reply.take(200))
             speaker.speak(reply.take(200))
             return
         }
         val hands = HandsService.instance
-        if (hands == null && obj.optString("action") !in setOf("answer", "done")) {
-            LogBus.log("无障碍未开启")
+        val needsHands = obj.optString("action") !in setOf("answer", "done")
+        if (needsHands && hands == null) {
+            val msg = "请先开启无障碍权限（设置里的按钮）"
+            ChatBus.agent(msg)
+            speaker.speak(msg)
+            return
         }
         when (obj.optString("action")) {
             "answer", "done" -> {
-                val t = obj.optString("text")
-                LogBus.log("管家：$t")
+                val t = obj.optString("text").ifBlank { "完成" }
+                ChatBus.agent(t)
                 speaker.speak(t)
             }
             "tap_text" -> {
-                LogBus.log("执行：点击「${obj.optString("text")}」")
-                if (hands == null || !hands.tapByText(obj.optString("text"))) {
-                    speaker.speak("没有找到要点的按钮")
-                }
+                val t = obj.optString("text")
+                val ok = hands?.tapByText(t) == true
+                val msg = if (ok) "已点击「$t」" else "没有找到要点的按钮"
+                ChatBus.agent(msg)
+                speaker.speak(msg)
             }
             "tap_xy" -> {
-                LogBus.log("执行：点击坐标 (${obj.optDouble("x", 0.5)}, ${obj.optDouble("y", 0.5)})")
                 hands?.tapByFraction(
                     obj.optDouble("x", 0.5).toFloat(),
                     obj.optDouble("y", 0.5).toFloat(),
                 )
+                ChatBus.agent("已点击屏幕")
+                speaker.speak("好的")
             }
             "type" -> {
-                LogBus.log("执行：输入「${obj.optString("text")}」")
-                if (hands == null || !hands.typeText(obj.optString("text"))) {
-                    speaker.speak("没有可输入的输入框")
-                }
+                val t = obj.optString("text")
+                val ok = hands?.typeText(t) == true
+                val msg = if (ok) "已输入" else "没有可输入的输入框"
+                ChatBus.agent(msg)
+                speaker.speak(msg)
             }
             "swipe" -> {
-                LogBus.log("执行：滑动")
                 hands?.swipe(
                     obj.optDouble("x1", 0.5).toFloat(), obj.optDouble("y1", 0.8).toFloat(),
                     obj.optDouble("x2", 0.5).toFloat(), obj.optDouble("y2", 0.2).toFloat(),
                 )
+                ChatBus.agent("已滑动屏幕")
+                speaker.speak("好的")
             }
             "back" -> {
-                LogBus.log("执行：返回")
                 hands?.back()
+                ChatBus.agent("已返回")
+                speaker.speak("好的")
             }
             "home" -> {
-                LogBus.log("执行：回桌面")
                 hands?.home()
+                ChatBus.agent("已回到桌面")
+                speaker.speak("好的")
             }
             "open_app" -> {
-                LogBus.log("执行：打开「${obj.optString("text")}」")
-                if (hands == null || !hands.openApp(obj.optString("text"))) {
-                    speaker.speak("没有找到这个应用")
+                val q = obj.optString("text")
+                val err = hands?.openApp(q)
+                if (err == null) {
+                    val msg = "已打开「$q」"
+                    ChatBus.agent(msg)
+                    speaker.speak("好的，已经打开了")
+                } else {
+                    ChatBus.agent(err)
+                    speaker.speak(err)
                 }
             }
             else -> {
                 val t = obj.optString("text").ifBlank { "完成" }
-                LogBus.log("管家：$t")
+                ChatBus.agent(t)
                 speaker.speak(t)
             }
         }
     }
 
+    /** 唤醒提示音：柔和、短促。 */
+    private fun beep() {
+        if (!speakerEnabled()) return
+        runCatching {
+            val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60)
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+            scope.launch {
+                delay(400)
+                runCatching { tone.release() }
+            }
+        }
+    }
+
+    private fun speakerEnabled(): Boolean =
+        getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+            .getBoolean("speaker_enabled", true)
+
     /**
      * 收音：16 kHz 单声道，能量检测到人声后开始收集，静音约 1.2 秒结束。
-     * [maxIdleSeconds] 内完全没人说话则返回 null。
      */
     private suspend fun recordUtterance(maxIdleSeconds: Int): ByteArray? =
         withContext(Dispatchers.IO) {
@@ -320,7 +385,6 @@ class AgentService : Service() {
         private const val CHANNEL = "voice_agent"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "io.github.jakeranch.voiceagent.STOP"
-        private const val SPEECH_RMS = 400.0
 
         val WAKE_WORDS = listOf("小助手", "小管家", "管家")
 
@@ -329,6 +393,15 @@ class AgentService : Service() {
 
         @Volatile
         var lastStartError: String? = null
+
+        private val textQueue = ConcurrentLinkedQueue<String>()
+
+        /** 键盘模式提交文本指令（不用唤醒）。 */
+        fun submitText(text: String) {
+            if (text.isBlank()) return
+            ChatBus.user(text)
+            textQueue.add(text)
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, AgentService::class.java)
