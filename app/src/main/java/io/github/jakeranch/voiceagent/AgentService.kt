@@ -156,10 +156,16 @@ class AgentService : Service() {
         // 多步循环：每轮执行一个动作，把已完成步骤和新屏幕塞回给大模型，直到 done
         val history = StringBuilder()
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        var tapStreak = 0
         for (step in 1..MAX_STEPS) {
             val screen = HandsService.instance?.dumpText() ?: ""
             val now = timeFmt.format(java.util.Date())
-            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n当前屏幕文本：\n$screen"
+            val hint = if (tapStreak >= 3) {
+                "⚠️ 注意：已经连续点击 $tapStreak 次，屏幕似乎没有变化。请换一种方式（用 type 输入文字、滑一滑、或直接告诉主人卡在哪里）。\n"
+            } else {
+                ""
+            }
+            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n$hint当前屏幕文本：\n$screen"
             val reply = Brain.ask(key, prompt)
             if (reply == null) {
                 LogBus.log("大脑无回应（key 或网络问题）")
@@ -195,6 +201,12 @@ class AgentService : Service() {
             val human = performStep(obj)
             ChatBus.agent(human)
             history.append("步骤$step：$human\n")
+            // 防重复：连续点击类操作计数，超过 3 次在提示里警告大模型
+            if (action == "tap_xy" || action == "tap_text") {
+                tapStreak++
+            } else {
+                tapStreak = 0
+            }
             delay(1_800) // 等界面变化
         }
         val msg = "任务步骤较多，我先执行到这里"
@@ -223,6 +235,9 @@ class AgentService : Service() {
             "type" -> {
                 val t = obj.optString("text")
                 if (hands?.typeText(t) == true) "已输入" else "没有可输入的输入框"
+            }
+            "enter" -> {
+                if (hands?.pressEnter() == true) "已按回车" else "无法按回车"
             }
             "swipe" -> {
                 hands?.swipe(

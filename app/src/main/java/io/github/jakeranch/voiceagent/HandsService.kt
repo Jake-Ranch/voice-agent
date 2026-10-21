@@ -124,6 +124,14 @@ class HandsService : AccessibilityService() {
 
     fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
+    /** 按回车/搜索键（输入完内容后确认用）。 */
+    fun pressEnter(): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        val root = rootInActiveWindow ?: return false
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        return focused.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+    }
+
     /** 按名称打开应用（只支持有主入口的应用）。返回 null 表示成功，否则为原因。 */
     fun openApp(labelOrPkg: String): String? {
         // 剥掉可能混进来的动词和"应用"后缀
