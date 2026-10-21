@@ -16,6 +16,9 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
         if (status == TextToSpeech.SUCCESS) {
             tts.language = Locale.CHINESE
             ready = true
+            LogBus.log("朗读引擎就绪")
+        } else {
+            LogBus.log("朗读引擎初始化失败（状态码 $status），回复可能没声音")
         }
     }
 
