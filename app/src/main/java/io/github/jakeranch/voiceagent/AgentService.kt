@@ -148,98 +148,114 @@ class AgentService : Service() {
             speaker.speak(msg)
             return
         }
-        val screen = HandsService.instance?.dumpText() ?: ""
-        val reply = Brain.ask(key, "主人指令：$cmd\n当前屏幕文本：\n$screen")
-        if (reply == null) {
-            LogBus.log("大脑无回应（key 或网络问题）")
-            val msg = "大脑没有回应，请检查密钥和网络"
-            ChatBus.agent(msg)
-            speaker.speak(msg)
-            return
-        }
-        LogBus.log("大脑：$reply")
-        execute(reply)
-        beep(ack = false) // 完成提示音
-    }
-
-    private fun execute(reply: String) {
-        val obj = runCatching { JSONObject(reply.trim()) }.getOrNull()
-        if (obj == null) {
-            ChatBus.agent(reply.take(200))
-            speaker.speak(reply.take(200))
-            return
-        }
-        val hands = HandsService.instance
-        val needsHands = obj.optString("action") !in setOf("answer", "done")
-        if (needsHands && hands == null) {
-            val msg = "请先开启无障碍权限（设置里的按钮）"
-            ChatBus.agent(msg)
-            speaker.speak(msg)
-            return
-        }
-        when (obj.optString("action")) {
-            "answer", "done" -> {
+        // 多步循环：每轮执行一个动作，把已完成步骤和新屏幕塞回给大模型，直到 done
+        val history = StringBuilder()
+        val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        for (step in 1..MAX_STEPS) {
+            val screen = HandsService.instance?.dumpText() ?: ""
+            val now = timeFmt.format(java.util.Date())
+            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n当前屏幕文本：\n$screen"
+            val reply = Brain.ask(key, prompt)
+            if (reply == null) {
+                LogBus.log("大脑无回应（key 或网络问题）")
+                val msg = "大脑没有回应，请检查密钥和网络"
+                ChatBus.agent(msg)
+                speaker.speak(msg)
+                return
+            }
+            LogBus.log("第${step}步 大脑：$reply")
+            val obj = runCatching { JSONObject(reply.trim()) }.getOrNull()
+            if (obj == null) {
+                ChatBus.agent(reply.take(200))
+                speaker.speak(reply.take(200))
+                return
+            }
+            val action = obj.optString("action")
+            if (action == "done" || action == "answer") {
                 val t = obj.optString("text").ifBlank { "完成" }
                 ChatBus.agent(t)
                 speaker.speak(t)
+                beep(ack = false)
+                return
+            }
+            val human = performStep(obj)
+            ChatBus.agent(human)
+            history.append("步骤$step：$human\n")
+            delay(1_800) // 等界面变化
+        }
+        val msg = "任务步骤较多，我先执行到这里"
+        ChatBus.agent(msg)
+        speaker.speak(msg)
+        beep(ack = false)
+    }
+
+    /** 执行一个动作，返回人类可读的描述（不进语音，只在气泡显示）。 */
+    private fun performStep(obj: JSONObject): String {
+        val hands = HandsService.instance
+        val needsHands = obj.optString("action") !in setOf("answer", "done", "set_alarm")
+        if (needsHands && hands == null) return "请先开启无障碍权限（设置里的按钮）"
+        return when (obj.optString("action")) {
+            "set_alarm" -> {
+                val minutes = obj.optInt("minutes", 0)
+                if (minutes <= 0) "没听懂要多久后提醒"
+                else setAlarm(minutes)
             }
             "tap_text" -> {
                 val t = obj.optString("text")
-                val ok = hands?.tapByText(t) == true
-                val msg = if (ok) "已点击「$t」" else "没有找到要点的按钮"
-                ChatBus.agent(msg)
-                speaker.speak(msg)
+                if (hands?.tapByText(t) == true) "已点击「$t」" else "没有找到要点的按钮"
             }
             "tap_xy" -> {
                 hands?.tapByFraction(
                     obj.optDouble("x", 0.5).toFloat(),
                     obj.optDouble("y", 0.5).toFloat(),
                 )
-                ChatBus.agent("已点击屏幕")
-                speaker.speak("好的")
+                "已点击屏幕"
             }
             "type" -> {
                 val t = obj.optString("text")
-                val ok = hands?.typeText(t) == true
-                val msg = if (ok) "已输入" else "没有可输入的输入框"
-                ChatBus.agent(msg)
-                speaker.speak(msg)
+                if (hands?.typeText(t) == true) "已输入" else "没有可输入的输入框"
             }
             "swipe" -> {
                 hands?.swipe(
                     obj.optDouble("x1", 0.5).toFloat(), obj.optDouble("y1", 0.8).toFloat(),
                     obj.optDouble("x2", 0.5).toFloat(), obj.optDouble("y2", 0.2).toFloat(),
                 )
-                ChatBus.agent("已滑动屏幕")
-                speaker.speak("好的")
+                "已滑动屏幕"
             }
             "back" -> {
                 hands?.back()
-                ChatBus.agent("已返回")
-                speaker.speak("好的")
+                "已返回"
             }
             "home" -> {
                 hands?.home()
-                ChatBus.agent("已回到桌面")
-                speaker.speak("好的")
+                "已回到桌面"
             }
             "open_app" -> {
                 val q = obj.optString("text")
                 val err = hands?.openApp(q)
-                if (err == null) {
-                    val msg = "已打开「$q」"
-                    ChatBus.agent(msg)
-                    speaker.speak("好的，已经打开了")
-                } else {
-                    ChatBus.agent(err)
-                    speaker.speak(err)
-                }
+                if (err == null) "已打开「$q」" else err
             }
-            else -> {
-                val t = obj.optString("text").ifBlank { "完成" }
-                ChatBus.agent(t)
-                speaker.speak(t)
-            }
+            else -> obj.optString("text").ifBlank { "完成" }
+        }
+    }
+
+    /** 设置 X 分钟后的闹钟（不依赖无障碍，直接预填系统闹钟）。 */
+    private fun setAlarm(minutes: Int): String {
+        val cal = java.util.Calendar.getInstance()
+        cal.add(java.util.Calendar.MINUTE, minutes)
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, cal.get(java.util.Calendar.HOUR_OF_DAY))
+            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, cal.get(java.util.Calendar.MINUTE))
+            .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "语音管家提醒")
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
+            val mm = cal.get(java.util.Calendar.MINUTE)
+            "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        } catch (e: Exception) {
+            "设置闹钟失败"
         }
     }
 
@@ -388,6 +404,9 @@ class AgentService : Service() {
         private const val ACTION_STOP = "io.github.jakeranch.voiceagent.STOP"
 
         val WAKE_WORDS = listOf("小助手", "小管家", "管家")
+
+        /** 多步任务最大步数（超过则先停下来）。 */
+        private const val MAX_STEPS = 6
 
         @Volatile
         var isRunning: Boolean = false
