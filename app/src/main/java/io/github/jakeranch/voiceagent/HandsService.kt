@@ -175,6 +175,36 @@ class HandsService : AccessibilityService() {
         return null
     }
 
+    /**
+     * 设置 X 分钟后的系统闹钟。无障碍服务由系统绑定，启动界面有豁免。
+     * 返回人类可读结果；"被拦"表示两种启动都被系统拒绝。
+     */
+    fun setAlarm(minutes: Int): String {
+        val cal = java.util.Calendar.getInstance()
+        cal.add(java.util.Calendar.MINUTE, minutes)
+        val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        val mm = cal.get(java.util.Calendar.MINUTE)
+        fun mkIntent(skipUi: Boolean): Intent =
+            Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+                .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hh)
+                .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, mm)
+                .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "语音管家提醒")
+                .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // 1) 全自动（部分手机的时钟支持免确认）
+        if (launchAlarm(mkIntent(true))) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        // 2) 预填好时间的编辑页（点一下保存）
+        if (launchAlarm(mkIntent(false))) return "闹钟已预填好（$hh:$mm），点一下保存即可"
+        return "闹钟界面被拦"
+    }
+
+    private fun launchAlarm(i: Intent): Boolean = try {
+        startActivity(i)
+        true
+    } catch (e: Exception) {
+        false
+    }
+
     private fun launch(intent: Intent) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { startActivity(intent) }

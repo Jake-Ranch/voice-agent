@@ -249,32 +249,34 @@ class AgentService : Service() {
     }
 
     /**
-     * 设置 X 分钟后的闹钟。Android 10+ 禁止后台服务弹界面，所以：
-     * 1) 先试直接跳转；2) 被拦就发一条通知，用户点一下即可打开预填好的闹钟。
+     * 设置 X 分钟后的闹钟。三级降级：
+     * 1) 无障碍服务启动（系统绑定有豁免）：全自动 → 预填界面；
+     * 2) 后台直跳（旧路径）；
+     * 3) 通知兜底：点一下通知打开预填好的闹钟。
      */
     private fun setAlarm(minutes: Int): String {
+        val viaHands = HandsService.instance?.setAlarm(minutes)
+        if (viaHands != null && !viaHands.contains("被拦")) return viaHands
+
         val cal = java.util.Calendar.getInstance()
         cal.add(java.util.Calendar.MINUTE, minutes)
         val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
         val mm = cal.get(java.util.Calendar.MINUTE)
-        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+        fun mkIntent(skipUi: Boolean) = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
             .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hh)
             .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, mm)
             .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "语音管家提醒")
-            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val ok = try {
-            startActivity(intent)
-            true
-        } catch (e: Exception) {
-            LogBus.log("setAlarm 直接跳转被拦：${e.message}")
-            false
-        }
-        if (ok) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        val auto = try { startActivity(mkIntent(true)); true } catch (e: Exception) { false }
+        if (auto) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        val ui = try { startActivity(mkIntent(false)); true } catch (e: Exception) { false }
+        if (ui) return "闹钟已预填好（$hh:$mm），点一下保存即可"
+
         // 通知兜底：点通知 = 用户主动操作，系统允许打开界面
         return try {
             val pi = PendingIntent.getActivity(
-                this, 9, intent,
+                this, 9, mkIntent(false),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -293,7 +295,7 @@ class AgentService : Service() {
                 .setAutoCancel(true)
                 .build()
             nm.notify(9, n)
-            "系统拦了自动跳转，已发一条通知：点一下通知即可设好闹钟"
+            "系统拦了自动跳转，已发通知：点一下通知即可打开预填好的闹钟（$hh:$mm）"
         } catch (e: Exception) {
             LogBus.log("setAlarm 通知兜底失败：${e.message}")
             "设置闹钟失败"
