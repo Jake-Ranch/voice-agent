@@ -22,10 +22,11 @@
             </intent-filter>
         </activity>
 
-        <!-- 常驻语音服务：唤醒词监听 + 本地识别 + DeepSeek 大脑 -->
+        <!-- 常驻语音服务：唤醒词监听 + 本地识别 + DeepSeek 大脑
+             exported 由 gradle 属性 exportService 控制：模拟器调试 true，手机 false -->
         <service
             android:name=".AgentService"
-            android:exported="false"
+            android:exported="${agentServiceExported}"
             android:foregroundServiceType="microphone" />
 
         <!-- 无障碍服务：操作手机（点按/输入/滑动/返回） -->

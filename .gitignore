@@ -1,3 +1,7 @@
 local.properties
 app/libs/
+app/src/main/assets/asr/
 *.apk
+.gradle/
+build/
+app/build/

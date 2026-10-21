@@ -14,6 +14,8 @@ android {
         versionCode = 5
         versionName = "0.3.2"
         ndk { abiFilters += listOf((project.findProperty("abi") as String?) ?: "arm64-v8a") }
+        manifestPlaceholders["agentServiceExported"] =
+            (project.findProperty("exportService") as String?) ?: "false"
     }
 
     buildTypes {

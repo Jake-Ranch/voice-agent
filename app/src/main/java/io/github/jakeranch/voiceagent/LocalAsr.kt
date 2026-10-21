@@ -72,11 +72,13 @@ object LocalAsr {
                 recognizer = OfflineRecognizer(config = config)
                 ready = true
                 state = "ready"
+                LogBus.log("本地识别模型就绪")
             } catch (t: Throwable) {
                 android.util.Log.e("LocalAsr", "init failed", t)
                 lastError = t.message ?: t.javaClass.simpleName
                 state = "failed"
                 ready = false
+                LogBus.log("模型加载失败：$lastError")
             }
         }.start()
     }

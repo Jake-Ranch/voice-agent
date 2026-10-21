@@ -46,6 +46,11 @@ class AgentService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // adb 调试入口：am start-foreground-service ... --es text "指令"
+        val typed = intent?.getStringExtra("text")
+        if (!typed.isNullOrBlank()) {
+            submitText(typed)
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
