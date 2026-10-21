@@ -73,18 +73,20 @@ class AgentService : Service() {
 
     private suspend fun loop() {
         LocalAsr.ensureInit(this)
-        speaker = Speaker(this)
+        speaker = withContext(Dispatchers.Main) { Speaker(this@AgentService) }
         LogBus.log("语音服务已启动")
         while (true) {
             updateNotification()
             if (!LocalAsr.isReady) {
                 if (LocalAsr.state == "failed") {
+                    StateBus.set(StateBus.State.FAULT)
                     LogBus.log("模型加载失败：" + (LocalAsr.lastError ?: "未知"))
                 }
                 delay(3_000)
                 continue
             }
             // 1) 等唤醒词
+            StateBus.set(StateBus.State.IDLE)
             val wakeWav = recordUtterance(maxIdleSeconds = 60) ?: continue
             val wakeText = LocalAsr.transcribe(wakeWav) ?: continue
             LogBus.log("听到：$wakeText")
@@ -92,6 +94,7 @@ class AgentService : Service() {
             LogBus.log("唤醒成功")
 
             // 2) 唤醒反馈，稍等 TTS 播完再收音，避免麦克风录到自己的声音
+            StateBus.set(StateBus.State.LISTENING)
             speaker.speak("在的")
             delay(1_500)
             val cmdWav = recordUtterance(maxIdleSeconds = 20) ?: continue
@@ -100,6 +103,8 @@ class AgentService : Service() {
             LogBus.log("指令：$cmd")
 
             // 3) DeepSeek 决策
+            StateBus.set(StateBus.State.WORKING)
+            LogBus.log("正在调用大模型…")
             val key = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
                 .getString("deepseek_key", "").orEmpty()
             if (key.isBlank()) {
@@ -118,6 +123,7 @@ class AgentService : Service() {
 
             // 4) 执行
             execute(reply)
+            StateBus.set(StateBus.State.IDLE)
             delay(3_000) // 等朗读结束再回到唤醒监听，避免录到自己的回复
         }
     }
@@ -125,6 +131,7 @@ class AgentService : Service() {
     private fun execute(reply: String) {
         val obj = runCatching { JSONObject(reply.trim()) }.getOrNull()
         if (obj == null) {
+            LogBus.log("管家：$reply")
             speaker.speak(reply.take(200))
             return
         }
@@ -133,27 +140,56 @@ class AgentService : Service() {
             LogBus.log("无障碍未开启")
         }
         when (obj.optString("action")) {
-            "answer", "done" -> speaker.speak(obj.optString("text"))
-            "tap_text" -> if (hands == null || !hands.tapByText(obj.optString("text"))) {
-                speaker.speak("没有找到要点的按钮")
+            "answer", "done" -> {
+                val t = obj.optString("text")
+                LogBus.log("管家：$t")
+                speaker.speak(t)
             }
-            "tap_xy" -> hands?.tapByFraction(
-                obj.optDouble("x", 0.5).toFloat(),
-                obj.optDouble("y", 0.5).toFloat(),
-            )
-            "type" -> if (hands == null || !hands.typeText(obj.optString("text"))) {
-                speaker.speak("没有可输入的输入框")
+            "tap_text" -> {
+                LogBus.log("执行：点击「${obj.optString("text")}」")
+                if (hands == null || !hands.tapByText(obj.optString("text"))) {
+                    speaker.speak("没有找到要点的按钮")
+                }
             }
-            "swipe" -> hands?.swipe(
-                obj.optDouble("x1", 0.5).toFloat(), obj.optDouble("y1", 0.8).toFloat(),
-                obj.optDouble("x2", 0.5).toFloat(), obj.optDouble("y2", 0.2).toFloat(),
-            )
-            "back" -> hands?.back()
-            "home" -> hands?.home()
-            "open_app" -> if (hands == null || !hands.openApp(obj.optString("text"))) {
-                speaker.speak("没有找到这个应用")
+            "tap_xy" -> {
+                LogBus.log("执行：点击坐标 (${obj.optDouble("x", 0.5)}, ${obj.optDouble("y", 0.5)})")
+                hands?.tapByFraction(
+                    obj.optDouble("x", 0.5).toFloat(),
+                    obj.optDouble("y", 0.5).toFloat(),
+                )
             }
-            else -> speaker.speak(obj.optString("text").ifBlank { "完成" })
+            "type" -> {
+                LogBus.log("执行：输入「${obj.optString("text")}」")
+                if (hands == null || !hands.typeText(obj.optString("text"))) {
+                    speaker.speak("没有可输入的输入框")
+                }
+            }
+            "swipe" -> {
+                LogBus.log("执行：滑动")
+                hands?.swipe(
+                    obj.optDouble("x1", 0.5).toFloat(), obj.optDouble("y1", 0.8).toFloat(),
+                    obj.optDouble("x2", 0.5).toFloat(), obj.optDouble("y2", 0.2).toFloat(),
+                )
+            }
+            "back" -> {
+                LogBus.log("执行：返回")
+                hands?.back()
+            }
+            "home" -> {
+                LogBus.log("执行：回桌面")
+                hands?.home()
+            }
+            "open_app" -> {
+                LogBus.log("执行：打开「${obj.optString("text")}」")
+                if (hands == null || !hands.openApp(obj.optString("text"))) {
+                    speaker.speak("没有找到这个应用")
+                }
+            }
+            else -> {
+                val t = obj.optString("text").ifBlank { "完成" }
+                LogBus.log("管家：$t")
+                speaker.speak(t)
+            }
         }
     }
 
@@ -181,6 +217,7 @@ class AgentService : Service() {
             var speechSeen = false
             var lastSpeechAt = System.currentTimeMillis()
             val startAt = System.currentTimeMillis()
+            var noiseFloor = 300.0
             try {
                 rec.startRecording()
                 while (System.currentTimeMillis() - startAt < maxIdleSeconds * 1000L) {
@@ -192,7 +229,12 @@ class AgentService : Service() {
                         sum += v * v
                     }
                     val rms = kotlin.math.sqrt(sum / n)
-                    val isSpeech = rms > SPEECH_RMS
+                    // 自适应噪声底：只在不说话的低电平帧更新，躺着远距离轻声也能触发
+                    if (!speechSeen && rms < 800) {
+                        noiseFloor = noiseFloor * 0.95 + rms * 0.05
+                    }
+                    val threshold = (noiseFloor * 4).coerceAtLeast(150.0)
+                    val isSpeech = rms > threshold
                     if (isSpeech) {
                         speechSeen = true
                         lastSpeechAt = System.currentTimeMillis()
