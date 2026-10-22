@@ -42,16 +42,24 @@ class HandsService : AccessibilityService() {
         if (depth > 12 || sb.length > 12000) return
         val text = node.text?.toString()?.trim()
         val desc = node.contentDescription?.toString()?.trim()
-        if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
-            // 附带中心坐标（0-1 比例），让大脑能用 tap_xy 精确点击
+        val isEditableNode = node.isEditable
+        if (!text.isNullOrEmpty() || !desc.isNullOrEmpty() || isEditableNode) {
+            // 附带中心坐标（0-1 比例），让大脑能用 tap_xy 精确点击；[可输入] 标记可输入框
             val r = android.graphics.Rect()
             node.getBoundsInScreen(r)
             val w = resources.displayMetrics.widthPixels.toFloat()
             val h = resources.displayMetrics.heightPixels.toFloat()
             val cx = ((r.left + r.right) / 2f / w).coerceIn(0f, 1f)
             val cy = ((r.top + r.bottom) / 2f / h).coerceIn(0f, 1f)
+            val label = when {
+                !text.isNullOrEmpty() -> text
+                !desc.isNullOrEmpty() -> desc
+                else -> "[输入框]"
+            }
+            val tag = if (isEditableNode) "[可输入]" else ""
             sb.append("  ".repeat(depth))
-                .append(if (!text.isNullOrEmpty()) text else desc)
+                .append(label)
+                .append(tag)
                 .append(String.format(" (%.2f,%.2f)", cx, cy))
                 .append('\n')
         }
@@ -108,17 +116,46 @@ class HandsService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    /** 在当前焦点输入框输入文字。 */
+    /** 在当前输入框输入文字（多策略：焦点框 → 任意可编辑节点 → 剪贴板粘贴）。 */
     fun typeText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        // 1) 有焦点的输入框
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused != null && setTextOn(focused, text)) return true
+        // 2) 任意可见的可编辑节点（高德等自定义搜索框不报告焦点）
+        val editable = findEditable(root)
+        if (editable != null && setTextOn(editable, text)) return true
+        return false
+    }
+
+    private fun setTextOn(node: AccessibilityNodeInfo, text: String): Boolean {
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                 text,
             )
         }
-        return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
+        // 顽固输入框：剪贴板 + 粘贴兜底
+        return try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("voice", text))
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS) &&
+                node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable && node.isVisibleToUser) return node
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { child ->
+                findEditable(child)?.let { return it }
+            }
+        }
+        return null
     }
 
     fun back(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)

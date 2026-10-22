@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var speakerBtn: TextView
     private lateinit var chatContainer: LinearLayout
     private lateinit var settingsPanel: LinearLayout
+    private lateinit var logScroll: ScrollView
     private lateinit var logPanel: TextView
     private lateinit var keyInput: EditText
     private lateinit var inputToggle: TextView
@@ -90,7 +91,7 @@ class MainActivity : Activity() {
         top.addView(spacer)
         speakerBtn = navIcon("🔊")
         top.addView(speakerBtn)
-        top.addView(navIcon("📋") { logPanel.visibility = if (logPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
+        top.addView(navIcon("📋") { logScroll.visibility = if (logScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         top.addView(navIcon("⚙️") { settingsPanel.visibility = if (settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         root.addView(top)
 
@@ -130,16 +131,23 @@ class MainActivity : Activity() {
         })
         root.addView(settingsPanel)
 
-        // ── 日志面板（点日志图标显示，调试用）──
-        logPanel = TextView(this).apply {
+        // ── 日志面板（点日志图标显示；固定约 15 行高，可上下拖动）──
+        logScroll = ScrollView(this).apply {
             visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (240 * resources.displayMetrics.density).toInt(),
+            )
+            setBackgroundColor(Color.rgb(250, 250, 240))
+        }
+        logPanel = TextView(this).apply {
             textSize = 12f
             setTextColor(Color.DKGRAY)
             typeface = Typeface.MONOSPACE
             setPadding(pad, pad, pad, pad)
-            setBackgroundColor(Color.rgb(250, 250, 240))
         }
-        root.addView(logPanel)
+        logScroll.addView(logPanel)
+        root.addView(logScroll)
 
         // ── 聊天区（气泡）──
         chatContainer = LinearLayout(this).apply {
@@ -259,7 +267,7 @@ class MainActivity : Activity() {
             refresh()
         }
 
-        if (logPanel.visibility == View.VISIBLE) {
+        if (logScroll.visibility == View.VISIBLE) {
             logPanel.text = LogBus.snapshot().ifBlank { "（暂无调试日志）" }
         }
 
