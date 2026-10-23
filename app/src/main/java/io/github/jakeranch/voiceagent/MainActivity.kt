@@ -198,9 +198,8 @@ class MainActivity : Activity() {
             setOnClickListener { adjustSilence(0.5f) }
         })
         settingsPanel.addView(silRow)
-        root.addView(settingsPanel)
 
-        // 遮罩：点它收起抽屉
+        // 遮罩必须先加：FrameLayout 后加的盖在上面，面板要盖在遮罩之上
         scrim = View(this).apply {
             setBackgroundColor(Color.argb(120, 0, 0, 0))
             visibility = View.GONE
@@ -213,6 +212,7 @@ class MainActivity : Activity() {
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        root.addView(settingsPanel)
 
         // ── 日志面板（点日志图标显示；固定约 15 行高，可上下拖动）──
         logScroll = ScrollView(this).apply {
@@ -292,7 +292,12 @@ class MainActivity : Activity() {
         settingsPanel.translationX = -settingsPanel.width.toFloat()
         settingsPanel.visibility = View.VISIBLE
         scrim.visibility = View.VISIBLE
-        settingsPanel.animate().translationX(0f).setDuration(200).start()
+        settingsPanel.animate().translationX(0f).setDuration(200).withEndAction {
+            val loc = IntArray(2)
+            settingsPanel.getLocationOnScreen(loc)
+            LogBus.log("抽屉面板位置：${loc[0]},${loc[1]} 宽=${settingsPanel.width} 高=${settingsPanel.height}")
+        }.start()
+        LogBus.log("设置抽屉已打开")
         refreshSilenceLabel()
     }
 
@@ -305,6 +310,7 @@ class MainActivity : Activity() {
                 scrim.visibility = View.GONE
             }
             .start()
+        LogBus.log("设置抽屉已收起")
     }
 
     private fun silenceSeconds(): Float =

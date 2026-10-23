@@ -23,10 +23,12 @@ class HandsService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        LogBus.log("无障碍服务已连接")
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        LogBus.log("无障碍服务断开")
         super.onDestroy()
     }
 

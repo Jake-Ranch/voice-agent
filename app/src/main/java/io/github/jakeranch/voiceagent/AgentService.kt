@@ -173,6 +173,8 @@ class AgentService : Service() {
         val history = StringBuilder()
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
         var tapStreak = 0
+        var stuckStreak = 0
+        var lastStepKey = ""
         try {
             for (step in 1..MAX_STEPS) {
             // 手动终止检查
@@ -188,6 +190,16 @@ class AgentService : Service() {
             // 连续点击 6 次没进展：强制停下
             if (tapStreak >= 6) {
                 val m = "连续点击没有进展，我先停下来了"
+                LogBus.log(m)
+                ChatBus.agent(m)
+                speaker.speak(m)
+                beep(ack = false)
+                return
+            }
+            // 同一个动作重复 3 次：强制停下（防 open_app 死循环）
+            if (stuckStreak >= 3) {
+                val m = "同一个操作重复了几次都没进展，我先停下来了"
+                LogBus.log(m)
                 ChatBus.agent(m)
                 speaker.speak(m)
                 beep(ack = false)
@@ -243,6 +255,15 @@ class AgentService : Service() {
                 tapStreak++
             } else {
                 tapStreak = 0
+            }
+            // 完全相同动作（含 open_app）重复计数
+            val stepKey = action + "|" + obj.optString("text") + "|" +
+                obj.optDouble("x", -1.0) + "," + obj.optDouble("y", -1.0)
+            if (stepKey == lastStepKey) {
+                stuckStreak++
+            } else {
+                lastStepKey = stepKey
+                stuckStreak = 1
             }
             delay(1_800) // 等界面变化
         }
