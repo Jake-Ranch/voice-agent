@@ -87,6 +87,14 @@ class AgentService : Service() {
         LogBus.log("语音服务已启动")
         while (true) {
             updateNotification()
+            // 手动终止：回到待机
+            if (abortFlag) {
+                abortFlag = false
+                StateBus.partialText = ""
+                StateBus.set(StateBus.State.IDLE)
+                LogBus.log("已手动终止，回到待机")
+                continue
+            }
             // 0) 键盘输入的文本指令优先处理
             val typed = textQueue.poll()
             if (typed != null) {
@@ -160,6 +168,24 @@ class AgentService : Service() {
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
         var tapStreak = 0
         for (step in 1..MAX_STEPS) {
+            // 手动终止检查
+            if (abortFlag) {
+                abortFlag = false
+                StateBus.partialText = ""
+                StateBus.set(StateBus.State.IDLE)
+                val m = "已手动终止，回到待机"
+                ChatBus.agent(m)
+                speaker.speak(m)
+                return
+            }
+            // 连续点击 6 次没进展：强制停下
+            if (tapStreak >= 6) {
+                val m = "连续点击没有进展，我先停下来了"
+                ChatBus.agent(m)
+                speaker.speak(m)
+                beep(ack = false)
+                return
+            }
             val screen = HandsService.instance?.dumpText() ?: ""
             val now = timeFmt.format(java.util.Date())
             val hint = if (tapStreak >= 3) {
@@ -372,6 +398,7 @@ class AgentService : Service() {
             try {
                 rec.startRecording()
                 while (System.currentTimeMillis() - startAt < maxIdleSeconds * 1000L) {
+                    if (abortFlag) break
                     val n = rec.read(buf, 0, buf.size)
                     if (n <= 0) continue
                     var sum = 0.0
@@ -498,6 +525,14 @@ class AgentService : Service() {
 
         @Volatile
         var lastStartError: String? = null
+
+        @Volatile
+        private var abortFlag = false
+
+        /** 主界面"✋终止"按钮：强行打断当前操作，回到待机。 */
+        fun abort() {
+            abortFlag = true
+        }
 
         private val textQueue = ConcurrentLinkedQueue<String>()
 

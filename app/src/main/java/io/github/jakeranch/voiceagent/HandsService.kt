@@ -189,12 +189,28 @@ class HandsService : AccessibilityService() {
         // 按名称找（用 ACTION_MAIN/LAUNCHER 查询，比 getLaunchIntentForPackage 更可靠）
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val resolves = pm.queryIntentActivities(launcher, 0)
+        // 1) 全名包含
         for (ri in resolves) {
             val label = ri.loadLabel(pm).toString()
             if (label.contains(q, ignoreCase = true)) {
                 return openClockIfNeeded(raw, ri.activityInfo.packageName)
             }
         }
+        // 2) 宽松匹配：用查询的前 2~3 个字找（"高德地图" → 匹配"高德导航"）
+        val fuzzy = listOfNotNull(q.take(3).takeIf { it.length >= 2 }, q.take(2)).distinct()
+        for (tok in fuzzy) {
+            for (ri in resolves) {
+                val label = ri.loadLabel(pm).toString()
+                if (label.contains(tok, ignoreCase = true)) {
+                    LogBus.log("openApp 宽松匹配：$tok -> $label")
+                    return openClockIfNeeded(raw, ri.activityInfo.packageName)
+                }
+            }
+        }
+        LogBus.log(
+            "openApp 未找到「$raw」；本机应用：" +
+                resolves.take(20).joinToString("、") { it.loadLabel(pm).toString() },
+        )
         return "找不到叫「$raw」的应用"
     }
 

@@ -35,6 +35,7 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var dot: View
     private lateinit var stateText: TextView
+    private lateinit var abortBtn: TextView
     private lateinit var speakerBtn: TextView
     private lateinit var chatContainer: LinearLayout
     private lateinit var liveText: TextView
@@ -97,6 +98,19 @@ class MainActivity : Activity() {
             setPadding(pad / 2, 0, 0, 0)
         }
         top.addView(stateText)
+        abortBtn = TextView(this).apply {
+            text = "✋终止"
+            textSize = 15f
+            setTextColor(Color.RED)
+            setPadding(pad / 2, 0, 0, 0)
+            visibility = View.GONE
+            setOnClickListener {
+                AgentService.abort()
+                LogBus.log("已请求终止")
+                refresh()
+            }
+        }
+        top.addView(abortBtn)
         val spacer = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
@@ -359,6 +373,12 @@ class MainActivity : Activity() {
         }
         dot.background = gd
         stateText.text = " " + StateBus.label
+
+        // 终止按钮：只在倾听/执行时显示
+        abortBtn.visibility = if (
+            StateBus.current == StateBus.State.WORKING ||
+            StateBus.current == StateBus.State.LISTENING
+        ) View.VISIBLE else View.GONE
 
         // 流式识别实时文本
         val partial = StateBus.partialText
