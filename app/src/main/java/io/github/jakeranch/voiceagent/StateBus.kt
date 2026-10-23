@@ -14,6 +14,10 @@ object StateBus {
     var current: State = State.IDLE
         private set
 
+    /** 流式识别的实时文本（边说边显示）。 */
+    @Volatile
+    var partialText: String = ""
+
     fun set(s: State) {
         current = s
     }

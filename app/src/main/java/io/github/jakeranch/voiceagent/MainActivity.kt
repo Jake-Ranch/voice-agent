@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var stateText: TextView
     private lateinit var speakerBtn: TextView
     private lateinit var chatContainer: LinearLayout
+    private lateinit var liveText: TextView
     private lateinit var settingsPanel: LinearLayout
     private lateinit var logScroll: ScrollView
     private lateinit var logPanel: TextView
@@ -94,6 +95,15 @@ class MainActivity : Activity() {
         top.addView(navIcon("📋") { logScroll.visibility = if (logScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         top.addView(navIcon("⚙️") { settingsPanel.visibility = if (settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         root.addView(top)
+
+        // ── 流式识别实时文本（正在听：×××）──
+        liveText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(pad, pad / 2, pad, 0)
+            visibility = View.GONE
+        }
+        root.addView(liveText)
 
         // ── 设置面板（点齿轮显示）──
         settingsPanel = LinearLayout(this).apply {
@@ -255,6 +265,15 @@ class MainActivity : Activity() {
         }
         dot.background = gd
         stateText.text = " " + StateBus.label
+
+        // 流式识别实时文本
+        val partial = StateBus.partialText
+        if (partial.isBlank()) {
+            liveText.visibility = View.GONE
+        } else {
+            liveText.visibility = View.VISIBLE
+            liveText.text = "正在听：$partial"
+        }
 
         val speakerOn = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean("speaker_enabled", true)

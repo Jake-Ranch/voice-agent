@@ -127,8 +127,10 @@ class AgentService : Service() {
             StateBus.set(StateBus.State.LISTENING)
             speaker.speak("在的")
             delay(1_200)
-            val cmdWav = recordUtterance(maxIdleSeconds = 20)
+            StateBus.partialText = ""
+            val cmdWav = recordUtterance(maxIdleSeconds = 30, partial = true)
             val cmd = cmdWav?.let { LocalAsr.transcribe(it) }
+            StateBus.partialText = ""
             if (cmd.isNullOrBlank()) {
                 StateBus.set(StateBus.State.IDLE)
                 continue
@@ -335,9 +337,11 @@ class AgentService : Service() {
             .getBoolean("speaker_enabled", true)
 
     /**
-     * 收音：16 kHz 单声道，能量检测到人声后开始收集，静音约 1.2 秒结束。
+     * 收音：16 kHz 单声道。能量检测到人声后开始收集；
+     * 静音约 2.5 秒视为说完（按声音停顿决定，不按固定时长）。
+     * [partial] = true 时每 1.5 秒把已录内容做一次流式识别，写入 StateBus.partialText。
      */
-    private suspend fun recordUtterance(maxIdleSeconds: Int): ByteArray? =
+    private suspend fun recordUtterance(maxIdleSeconds: Int, partial: Boolean = false): ByteArray? =
         withContext(Dispatchers.IO) {
             val rate = 16_000
             val minBuf = AudioRecord.getMinBufferSize(
@@ -358,6 +362,8 @@ class AgentService : Service() {
             var lastSpeechAt = System.currentTimeMillis()
             val startAt = System.currentTimeMillis()
             var noiseFloor = 300.0
+            var lastPartialAt = 0L
+            val partialBusy = java.util.concurrent.atomic.AtomicBoolean(false)
             try {
                 rec.startRecording()
                 while (System.currentTimeMillis() - startAt < maxIdleSeconds * 1000L) {
@@ -385,8 +391,24 @@ class AgentService : Service() {
                             out.write(s and 0xFF)
                             out.write((s shr 8) and 0xFF)
                         }
-                        if (!isSpeech && System.currentTimeMillis() - lastSpeechAt > 1_200) break
-                        if (System.currentTimeMillis() - startAt > 30_000) break
+                        // 流式识别：每 1.5 秒把已录内容解一遍，边说边出字
+                        if (partial && System.currentTimeMillis() - lastPartialAt > 1_500 &&
+                            partialBusy.compareAndSet(false, true)
+                        ) {
+                            lastPartialAt = System.currentTimeMillis()
+                            val snapshot = out.toByteArray()
+                            scope.launch(Dispatchers.Default) {
+                                try {
+                                    val t = LocalAsr.transcribe(wav(snapshot))
+                                    if (!t.isNullOrBlank()) StateBus.partialText = t
+                                } finally {
+                                    partialBusy.set(false)
+                                }
+                            }
+                        }
+                        // 说完了：静音 2.5 秒才算结束；单句最长 60 秒
+                        if (!isSpeech && System.currentTimeMillis() - lastSpeechAt > 2_500) break
+                        if (System.currentTimeMillis() - startAt > 60_000) break
                     }
                 }
             } catch (e: Exception) {
