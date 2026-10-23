@@ -336,6 +336,11 @@ class AgentService : Service() {
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
             .getBoolean("speaker_enabled", true)
 
+    /** 说完判定静音时长（毫秒），设置里可调，默认 3 秒。 */
+    private fun endSilenceMs(): Long =
+        (getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+            .getFloat("end_silence_sec", 3.0f) * 1000).toLong()
+
     /**
      * 收音：16 kHz 单声道。能量检测到人声后开始收集；
      * 静音约 2.5 秒视为说完（按声音停顿决定，不按固定时长）。
@@ -406,8 +411,8 @@ class AgentService : Service() {
                                 }
                             }
                         }
-                        // 说完了：静音 2.5 秒才算结束；单句最长 60 秒
-                        if (!isSpeech && System.currentTimeMillis() - lastSpeechAt > 2_500) break
+                        // 说完了：静音超时（设置里可调，默认 3 秒）才算结束；单句最长 60 秒
+                        if (!isSpeech && System.currentTimeMillis() - lastSpeechAt > endSilenceMs()) break
                         if (System.currentTimeMillis() - startAt > 60_000) break
                     }
                 }

@@ -41,6 +41,8 @@ class MainActivity : Activity() {
     private lateinit var settingsPanel: LinearLayout
     private lateinit var logScroll: ScrollView
     private lateinit var logPanel: TextView
+    private lateinit var scrim: View
+    private lateinit var silLabel: TextView
     private lateinit var keyInput: EditText
     private lateinit var inputToggle: TextView
     private lateinit var textInput: EditText
@@ -64,10 +66,19 @@ class MainActivity : Activity() {
         }
 
         val pad = (14 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
+        // 根容器：FrameLayout，支持左侧滑出抽屉
+        val root = android.widget.FrameLayout(this)
+        val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(237, 237, 237))
         }
+        root.addView(
+            main,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
 
         // ── 顶栏 ──
         val top = LinearLayout(this).apply {
@@ -93,8 +104,8 @@ class MainActivity : Activity() {
         speakerBtn = navIcon("🔊")
         top.addView(speakerBtn)
         top.addView(navIcon("📋") { logScroll.visibility = if (logScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
-        top.addView(navIcon("⚙️") { settingsPanel.visibility = if (settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
-        root.addView(top)
+        top.addView(navIcon("⚙️") { openSettings() })
+        main.addView(top)
 
         // ── 流式识别实时文本（正在听：×××）──
         liveText = TextView(this).apply {
@@ -103,14 +114,21 @@ class MainActivity : Activity() {
             setPadding(pad, pad / 2, pad, 0)
             visibility = View.GONE
         }
-        root.addView(liveText)
+        main.addView(liveText)
 
-        // ── 设置面板（点齿轮显示）──
+        // ── 设置抽屉（左侧滑出；点外面空白收起）──
+        val panelWidth = (resources.displayMetrics.widthPixels * 0.8f).toInt()
         settingsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            setPadding(pad, pad, pad, pad)
+            setPadding(pad, pad * 3, pad, pad)
             setBackgroundColor(Color.WHITE)
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                panelWidth,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.START,
+            )
+            translationX = -panelWidth.toFloat()
+            visibility = View.GONE
         }
         settingsPanel.addView(TextView(this).apply {
             text = "DeepSeek API Key（只存本机）"
@@ -139,7 +157,48 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         })
+
+        // ── 说完判定静音时长（可调）──
+        val silRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, pad, 0, 0)
+        }
+        silRow.addView(TextView(this).apply {
+            text = "说完判定静音："
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        silRow.addView(Button(this).apply {
+            text = "－"
+            setOnClickListener { adjustSilence(-0.5f) }
+        })
+        silLabel = TextView(this).apply {
+            textSize = 15f
+            setTextColor(Color.BLACK)
+            setPadding(pad, 0, pad, 0)
+        }
+        silRow.addView(silLabel)
+        silRow.addView(Button(this).apply {
+            text = "＋"
+            setOnClickListener { adjustSilence(0.5f) }
+        })
+        settingsPanel.addView(silRow)
         root.addView(settingsPanel)
+
+        // 遮罩：点它收起抽屉
+        scrim = View(this).apply {
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            visibility = View.GONE
+            setOnClickListener { closeSettings() }
+        }
+        root.addView(
+            scrim,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
 
         // ── 日志面板（点日志图标显示；固定约 15 行高，可上下拖动）──
         logScroll = ScrollView(this).apply {
@@ -157,7 +216,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
         }
         logScroll.addView(logPanel)
-        root.addView(logScroll)
+        main.addView(logScroll)
 
         // ── 聊天区（气泡）──
         chatContainer = LinearLayout(this).apply {
@@ -170,7 +229,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
             )
         }
-        root.addView(chatScroll)
+        main.addView(chatScroll)
 
         // ── 底部输入行 ──
         inputRow = LinearLayout(this).apply {
@@ -207,11 +266,46 @@ class MainActivity : Activity() {
             setOnClickListener { sendText() }
         }
         inputRow.addView(sendBtn)
-        root.addView(inputRow)
+        main.addView(inputRow)
         toggleInputMode()
 
+        refreshSilenceLabel()
         setContentView(root)
         refreshLoop()
+    }
+
+    private fun openSettings() {
+        settingsPanel.translationX = -settingsPanel.width.toFloat()
+        settingsPanel.visibility = View.VISIBLE
+        scrim.visibility = View.VISIBLE
+        settingsPanel.animate().translationX(0f).setDuration(200).start()
+        refreshSilenceLabel()
+    }
+
+    private fun closeSettings() {
+        settingsPanel.animate()
+            .translationX(-settingsPanel.width.toFloat())
+            .setDuration(200)
+            .withEndAction {
+                settingsPanel.visibility = View.GONE
+                scrim.visibility = View.GONE
+            }
+            .start()
+    }
+
+    private fun silenceSeconds(): Float =
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat("end_silence_sec", 3.0f)
+
+    private fun adjustSilence(delta: Float) {
+        val v = (silenceSeconds() + delta).coerceIn(1.0f, 10.0f)
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putFloat("end_silence_sec", v).apply()
+        refreshSilenceLabel()
+    }
+
+    private fun refreshSilenceLabel() {
+        silLabel.text = "%.1f 秒".format(silenceSeconds())
     }
 
     private fun navIcon(emoji: String, onClick: (() -> Unit)? = null): TextView {
