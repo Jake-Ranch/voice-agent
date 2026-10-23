@@ -34,8 +34,13 @@ class HandsService : AccessibilityService() {
     fun dumpText(): String {
         val sb = StringBuilder()
         val root = rootInActiveWindow ?: return ""
-        collect(root, sb, 0)
-        return sb.toString()
+        return try {
+            collect(root, sb, 0)
+            sb.toString()
+        } catch (t: Throwable) {
+            LogBus.log("读屏幕树异常：${t.javaClass.simpleName}: ${t.message}")
+            sb.toString()
+        }
     }
 
     private fun collect(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {

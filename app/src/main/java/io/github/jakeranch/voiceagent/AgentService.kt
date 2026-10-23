@@ -34,7 +34,13 @@ import java.util.concurrent.ConcurrentLinkedQueue
  */
 class AgentService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+                LogBus.log("循环异常：${e.javaClass.simpleName}: ${e.message}")
+                StateBus.set(StateBus.State.IDLE)
+            },
+    )
     private lateinit var speaker: Speaker
     private var loopJob: Job? = null
 
@@ -167,7 +173,8 @@ class AgentService : Service() {
         val history = StringBuilder()
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
         var tapStreak = 0
-        for (step in 1..MAX_STEPS) {
+        try {
+            for (step in 1..MAX_STEPS) {
             // 手动终止检查
             if (abortFlag) {
                 abortFlag = false
@@ -186,15 +193,17 @@ class AgentService : Service() {
                 beep(ack = false)
                 return
             }
-            val screen = HandsService.instance?.dumpText() ?: ""
+            val screen = runCatching { HandsService.instance?.dumpText() }.getOrNull() ?: ""
             val now = timeFmt.format(java.util.Date())
             val hint = if (tapStreak >= 3) {
                 "⚠️ 注意：已经连续点击 $tapStreak 次，屏幕似乎没有变化。请换一种方式（用 type 输入文字、滑一滑、或直接告诉主人卡在哪里）。\n"
             } else {
                 ""
             }
-            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n${hint}当前屏幕文本：\n$screen"
+            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n${hint}当前屏幕文本（${screen.length} 字）：\n$screen"
+            val t0 = System.currentTimeMillis()
             val reply = Brain.ask(key, prompt)
+            LogBus.log("大脑耗时 ${System.currentTimeMillis() - t0} ms")
             if (reply == null) {
                 LogBus.log("大脑无回应（key 或网络问题）")
                 val msg = "大脑没有回应，请检查密钥和网络"
@@ -236,6 +245,14 @@ class AgentService : Service() {
                 tapStreak = 0
             }
             delay(1_800) // 等界面变化
+        }
+        } catch (t: Throwable) {
+            LogBus.log("指令处理异常：${t.javaClass.simpleName}: ${t.message}")
+            val m = "内部出错了，已回到待机"
+            ChatBus.agent(m)
+            speaker.speak(m)
+            StateBus.set(StateBus.State.IDLE)
+            return
         }
         val msg = "任务步骤较多，我先执行到这里"
         ChatBus.agent(msg)
