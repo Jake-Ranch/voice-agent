@@ -24,8 +24,12 @@ Start-Sleep -Seconds 2
 & $adb shell pm grant $pkg android.permission.POST_NOTIFICATIONS 2>&1 | Out-Null
 & $adb shell settings put secure enabled_accessibility_services "$pkg/$pkg.HandsService" 2>&1 | Out-Null
 & $adb shell settings put secure accessibility_enabled 1 2>&1 | Out-Null
-Start-Sleep -Seconds 4
-$bound = ((& $adb shell dumpsys accessibility 2>&1) -join '')
+$bound = ''
+for ($i = 0; $i -lt 6; $i++) {
+    Start-Sleep -Seconds 4
+    $bound = ((& $adb shell dumpsys accessibility 2>&1) -join '')
+    if ($bound -match 'Bound services:\{Service') { break }
+}
 Check 'accessibility service bound' ($bound -match 'Bound services:\{Service')
 
 # 2) 启动 App，进程存活

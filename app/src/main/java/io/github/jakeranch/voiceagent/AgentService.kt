@@ -304,10 +304,17 @@ class AgentService : Service() {
                 if (ok) {
                     "已输入"
                 } else {
-                    // 诊断：把当前屏幕树打进日志，方便定位为什么找不到输入框
-                    LogBus.log("输入失败。当前屏幕树：\n" +
-                        hands?.dumpText().orEmpty().take(3000))
-                    "没有可输入的输入框"
+                    // 诊断：屏幕树打进日志 + 复制到剪贴板，用户直接粘贴发给开发者
+                    val tree = hands?.dumpText().orEmpty().take(3000)
+                    LogBus.log("输入失败。当前屏幕树：\n$tree")
+                    runCatching {
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(
+                            android.content.ClipData.newPlainText("voice_debug", tree),
+                        )
+                    }
+                    "没有可输入的输入框（屏幕结构已复制到剪贴板，粘贴发给开发者即可）"
                 }
             }
             "enter" -> {
