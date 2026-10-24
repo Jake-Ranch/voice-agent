@@ -300,7 +300,15 @@ class AgentService : Service() {
             }
             "type" -> {
                 val t = obj.optString("text")
-                if (hands?.typeText(t) == true) "已输入" else "没有可输入的输入框"
+                val ok = hands?.typeText(t) == true
+                if (ok) {
+                    "已输入"
+                } else {
+                    // 诊断：把当前屏幕树打进日志，方便定位为什么找不到输入框
+                    LogBus.log("输入失败。当前屏幕树：\n" +
+                        hands?.dumpText().orEmpty().take(3000))
+                    "没有可输入的输入框"
+                }
             }
             "enter" -> {
                 if (hands?.pressEnter() == true) "已按回车" else "无法按回车"

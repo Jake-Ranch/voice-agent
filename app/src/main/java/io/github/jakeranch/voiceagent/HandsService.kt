@@ -156,7 +156,9 @@ class HandsService : AccessibilityService() {
     }
 
     private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isEditable && node.isVisibleToUser) return node
+        // isEditable 或类名含 EditText 都算可输入（高德等自定义搜索框常用后者）
+        val cn = node.className?.toString().orEmpty()
+        if ((node.isEditable || cn.contains("EditText")) && node.isVisibleToUser) return node
         for (i in 0 until node.childCount) {
             node.getChild(i)?.let { child ->
                 findEditable(child)?.let { return it }
