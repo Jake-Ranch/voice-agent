@@ -172,8 +172,8 @@ class AgentService : Service() {
     private suspend fun processCommand(cmd: String) {
         StateBus.set(StateBus.State.WORKING)
         LogBus.log("正在调用大模型…")
-        val key = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
-            .getString("deepseek_key", "").orEmpty()
+        val prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+        val key = prefs.getString("deepseek_key", "").orEmpty()
         if (key.isBlank()) {
             LogBus.log("缺少 DeepSeek key")
             val msg = "请先在设置里填写 DeepSeek 密钥"
@@ -181,6 +181,14 @@ class AgentService : Service() {
             speaker.speak(msg)
             return
         }
+        // 可配置大脑（默认 DeepSeek；OpenAI 兼容的都可以换）
+        val brainModel = prefs.getString("brain_model", "").orEmpty().ifBlank { "deepseek-chat" }
+        val brainEndpoint = prefs.getString("brain_endpoint", "").orEmpty()
+            .ifBlank { Brain.DEEPSEEK_ENDPOINT }
+        // 技能指引 + 长期记忆（每轮自动注入）
+        val skillStr = Skills.match(cmd)?.let { "技能指引：$it\n" } ?: ""
+        val mems = MemoryStore.all(this)
+        val memStr = if (mems.isEmpty()) "" else "主人记忆：\n" + mems.joinToString("\n") { "- $it" } + "\n"
         // 多步循环：每轮执行一个动作，把已完成步骤和新屏幕塞回给大模型，直到 done
         val history = StringBuilder()
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
@@ -224,7 +232,7 @@ class AgentService : Service() {
             } else {
                 ""
             }
-            val ctx = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n$hint"
+            val ctx = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n${hint}${skillStr}${memStr}"
             var reply: String? = null
             // 屏幕文本太少（自绘/画布界面，如高德搜索页）：用视觉模型看截图决策
             if (screen.length < 200) {
@@ -247,7 +255,7 @@ class AgentService : Service() {
             if (reply == null) {
                 val prompt = "${ctx}当前屏幕文本（${screen.length} 字）：\n$screen"
                 val t0 = System.currentTimeMillis()
-                reply = Brain.ask(key, prompt)
+                reply = Brain.ask(key, brainEndpoint, brainModel, prompt)
                 LogBus.log("大脑耗时 ${System.currentTimeMillis() - t0} ms")
             }
             if (reply == null) {
@@ -318,9 +326,18 @@ class AgentService : Service() {
     /** 执行一个动作，返回人类可读的描述（不进语音，只在气泡显示）。 */
     private fun performStep(obj: JSONObject): String {
         val hands = HandsService.instance
-        val needsHands = obj.optString("action") !in setOf("answer", "done")
+        val needsHands = obj.optString("action") !in setOf("answer", "done", "remember", "clear_memory")
         if (needsHands && hands == null) return "请先开启无障碍权限（设置里的按钮）"
         return when (obj.optString("action")) {
+            "remember" -> {
+                val t = obj.optString("text")
+                MemoryStore.remember(this, t)
+                "已记住：$t"
+            }
+            "clear_memory" -> {
+                MemoryStore.clear(this)
+                "已清空记忆"
+            }
             "tap_text" -> {
                 val t = obj.optString("text")
                 if (hands?.tapByText(t) == true) "已点击「$t」" else "没有找到要点的按钮"

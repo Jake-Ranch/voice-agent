@@ -26,6 +26,8 @@ object Brain {
         {"action":"done","text":"简短总结"} 任务完成时输出，text 会被朗读
         {"action":"answer","text":"回答"} 只回答问题、不动手机
         {"action":"set_alarm","minutes":35} 主人要求"X分钟后/小时后叫醒我/提醒我"时用，minutes 是几分钟后（1小时=60分钟），用这个一步到位，不要再打开时钟应用
+        {"action":"remember","text":"要记住的内容"} 主人说"记住…"或透露重要偏好/事实时，存进长期记忆（记忆每轮自动提供给你）
+        {"action":"clear_memory"} 主人要求忘记或清空记忆时用
         {"action":"tap_text","text":"屏幕上的文字"} 点击包含该文字的元素
         {"action":"tap_xy","x":0.5,"y":0.5} 按比例坐标点击（0 到 1）
         {"action":"type","text":"要输入的内容"} 在当前输入框输入（屏幕上有 [可输入] 标记的就是输入框；点击搜索框后下一轮必须立刻用 type 输入，禁止重复点击搜索框；输完如需确认用 enter）
@@ -45,10 +47,10 @@ object Brain {
         - 时间换算要准确；回答要短。
     """.trimIndent()
 
-    /** 返回 DeepSeek 的 JSON 内容；失败返回 null。 */
-    fun ask(apiKey: String, userPrompt: String): String? {
+    /** 返回大脑的 JSON 内容；失败返回 null。endpoint/model 可配置，默认 DeepSeek。 */
+    fun ask(apiKey: String, endpoint: String, model: String, userPrompt: String): String? {
         val body = JSONObject().apply {
-            put("model", "deepseek-chat")
+            put("model", model)
             put("response_format", JSONObject().put("type", "json_object"))
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT))
@@ -58,7 +60,7 @@ object Brain {
             put("stream", false)
         }
         val request = Request.Builder()
-            .url(DEEPSEEK_ENDPOINT)
+            .url(endpoint)
             .addHeader("Authorization", "Bearer $apiKey")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()

@@ -48,6 +48,8 @@ class MainActivity : Activity() {
     private lateinit var visionKeyInput: EditText
     private lateinit var visionModelInput: EditText
     private lateinit var visionEndpointInput: EditText
+    private lateinit var brainModelInput: EditText
+    private lateinit var brainEndpointInput: EditText
     private lateinit var wakeInput: EditText
     private lateinit var inputToggle: TextView
     private lateinit var textInput: EditText
@@ -232,6 +234,44 @@ class MainActivity : Activity() {
             setTextColor(Color.BLACK)
         }
         settingsContent.addView(visionEndpointInput)
+
+        // ── 大脑模型（默认 DeepSeek，可换任何 OpenAI 兼容服务）──
+        settingsContent.addView(TextView(this).apply {
+            text = "大脑模型名（默认 deepseek-chat）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        brainModelInput = EditText(this).apply {
+            setText(
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString("brain_model", "deepseek-chat"),
+            )
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(brainModelInput)
+        settingsContent.addView(TextView(this).apply {
+            text = "大脑接口地址（OpenAI 兼容）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        brainEndpointInput = EditText(this).apply {
+            setText(
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString("brain_endpoint", "https://api.deepseek.com/chat/completions"),
+            )
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(brainEndpointInput)
+
+        // ── 记忆 ──
+        settingsContent.addView(Button(this).apply {
+            text = "清空管家记忆"
+            setOnClickListener {
+                MemoryStore.clear(this@MainActivity)
+                LogBus.log("记忆已清空")
+                refresh()
+            }
+        })
 
         // ── 自定义唤醒词 ──
         settingsContent.addView(TextView(this).apply {
@@ -453,6 +493,15 @@ class MainActivity : Activity() {
             .putString(
                 "vision_endpoint",
                 visionEndpointInput.text.toString().trim()
+                    .ifBlank { "https://api.deepseek.com/chat/completions" },
+            )
+            .putString(
+                "brain_model",
+                brainModelInput.text.toString().trim().ifBlank { "deepseek-chat" },
+            )
+            .putString(
+                "brain_endpoint",
+                brainEndpointInput.text.toString().trim()
                     .ifBlank { "https://api.deepseek.com/chat/completions" },
             )
             .putString("wake_words", wakeInput.text.toString().trim().ifBlank { "小助手" })
