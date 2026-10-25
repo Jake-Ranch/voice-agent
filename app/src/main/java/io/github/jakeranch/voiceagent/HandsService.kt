@@ -136,6 +136,7 @@ class HandsService : AccessibilityService() {
     }
 
     private fun setTextOn(node: AccessibilityNodeInfo, text: String): Boolean {
+        // 1) 标准 SET_TEXT
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -143,14 +144,41 @@ class HandsService : AccessibilityService() {
             )
         }
         if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
-        // 顽固输入框：剪贴板 + 粘贴兜底
-        return try {
+        // 2) 剪贴板 + 粘贴
+        try {
             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                 as android.content.ClipboardManager
             cm.setPrimaryClip(android.content.ClipData.newPlainText("voice", text))
-            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS) &&
+            if (node.performAction(AccessibilityNodeInfo.ACTION_FOCUS) &&
                 node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            ) return true
         } catch (e: Exception) {
+        }
+        // 3) Android 13+ 官方输入法通道注入（对高德等自定义搜索框最有效）
+        return injectViaIme(node, text)
+    }
+
+    /** API 33+：伪装成输入法直接 commitText（官方 AccessibilityInputConnection）。 */
+    private fun injectViaIme(node: AccessibilityNodeInfo, text: String): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return false
+        return try {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val im = getInputMethod() ?: return false
+            val ic = im.currentInputConnection ?: return false
+            // commitText 有 2 参（API 33）与 3 参（API 36）两个重载，用反射挑一个
+            val m = ic.javaClass.methods.firstOrNull {
+                it.name == "commitText" && it.parameterCount == 2
+            } ?: ic.javaClass.methods.firstOrNull {
+                it.name == "commitText" && it.parameterCount == 3
+            } ?: return false
+            if (m.parameterCount == 2) {
+                m.invoke(ic, text, 1)
+            } else {
+                m.invoke(ic, text, 1, null)
+            }
+            true
+        } catch (e: Exception) {
+            LogBus.log("IME 注入失败：${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
