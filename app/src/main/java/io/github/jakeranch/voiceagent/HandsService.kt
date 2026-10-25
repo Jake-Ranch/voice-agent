@@ -259,6 +259,53 @@ class HandsService : AccessibilityService() {
 
     fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
+    /** 截屏 → JPEG base64（视觉模型用；最长边 1568、总像素 ≤2M）。API 30+。 */
+    fun takeScreen(): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        return try {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var bmp: android.graphics.Bitmap? = null
+            val cb = object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    bmp = try {
+                        android.graphics.Bitmap.wrapHardwareBuffer(
+                            result.hardwareBuffer, result.colorSpace,
+                        )
+                    } catch (e: Exception) {
+                        null
+                    }
+                    latch.countDown()
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    latch.countDown()
+                }
+            }
+            val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+            takeScreenshot(0, executor, cb)
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            executor.shutdown()
+            val full = bmp ?: return null
+            val maxSide = 1568f
+            val scale = (maxSide / maxOf(full.width, full.height)).coerceAtMost(1f)
+            var sw = (full.width * scale).toInt().coerceAtLeast(1)
+            var sh = (full.height * scale).toInt().coerceAtLeast(1)
+            val pixels = sw.toLong() * sh
+            if (pixels > 2_000_000) {
+                val s2 = kotlin.math.sqrt(2_000_000.0 / pixels)
+                sw = (sw * s2).toInt().coerceAtLeast(1)
+                sh = (sh * s2).toInt().coerceAtLeast(1)
+            }
+            val scaled = android.graphics.Bitmap.createScaledBitmap(full, sw, sh, true)
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+            android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            LogBus.log("截屏失败：${e.message}")
+            null
+        }
+    }
+
     /** 按回车/搜索键（输入完内容后确认用）。 */
     fun pressEnter(): Boolean {
         if (Build.VERSION.SDK_INT < 30) return false

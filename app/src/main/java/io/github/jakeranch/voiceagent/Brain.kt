@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
  */
 object Brain {
 
-    private const val URL = "https://api.deepseek.com/chat/completions"
+    const val DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -58,7 +58,7 @@ object Brain {
             put("stream", false)
         }
         val request = Request.Builder()
-            .url(URL)
+            .url(DEEPSEEK_ENDPOINT)
             .addHeader("Authorization", "Bearer $apiKey")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()

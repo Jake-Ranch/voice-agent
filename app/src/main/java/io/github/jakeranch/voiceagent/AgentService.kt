@@ -145,7 +145,7 @@ class AgentService : Service() {
             }
             val wake = wakeText ?: continue
             LogBus.log("听到：$wake") // 调试日志，不进气泡
-            if (WAKE_WORDS.none { wake.contains(it) }) continue
+            if (wakeWords().none { wake.contains(it) }) continue
             LogBus.log("唤醒成功")
 
             // 2) 唤醒：柔和短促提示音，进入倾听
@@ -224,10 +224,32 @@ class AgentService : Service() {
             } else {
                 ""
             }
-            val prompt = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n${hint}当前屏幕文本（${screen.length} 字）：\n$screen"
-            val t0 = System.currentTimeMillis()
-            val reply = Brain.ask(key, prompt)
-            LogBus.log("大脑耗时 ${System.currentTimeMillis() - t0} ms")
+            val ctx = "主人指令：$cmd\n现在时间：$now\n已完成步骤：${history.ifEmpty { "无" }}\n$hint"
+            var reply: String? = null
+            // 屏幕文本太少（自绘/画布界面，如高德搜索页）：用视觉模型看截图决策
+            if (screen.length < 200) {
+                val prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+                val vKey = prefs.getString("vision_key", "").orEmpty().ifBlank { key }
+                val vModel = prefs.getString("vision_model", "").orEmpty()
+                    .ifBlank { "deepseek-v4-flash-vision-exp" }
+                val vEndpoint = prefs.getString("vision_endpoint", "").orEmpty()
+                    .ifBlank { Brain.DEEPSEEK_ENDPOINT }
+                val img = HandsService.instance?.takeScreen()
+                if (vKey.isNotBlank() && img != null) {
+                    reply = Vision.ask(vKey, vEndpoint, vModel, ctx, img)
+                    if (reply != null) {
+                        LogBus.log("视觉大脑决策（屏幕文本仅 ${screen.length} 字）")
+                    } else {
+                        LogBus.log("视觉大脑无回应，退回文本大脑")
+                    }
+                }
+            }
+            if (reply == null) {
+                val prompt = "${ctx}当前屏幕文本（${screen.length} 字）：\n$screen"
+                val t0 = System.currentTimeMillis()
+                reply = Brain.ask(key, prompt)
+                LogBus.log("大脑耗时 ${System.currentTimeMillis() - t0} ms")
+            }
             if (reply == null) {
                 LogBus.log("大脑无回应（key 或网络问题）")
                 val msg = "大脑没有回应，请检查密钥和网络"
@@ -426,6 +448,14 @@ class AgentService : Service() {
     private fun speakerEnabled(): Boolean =
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
             .getBoolean("speaker_enabled", true)
+
+    /** 用户自定义唤醒词（设置里可改），默认 小助手。 */
+    private fun wakeWords(): List<String> {
+        val s = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
+            .getString("wake_words", "").orEmpty().trim()
+        if (s.isBlank()) return WAKE_WORDS
+        return s.split(Regex("[\\s,，;；]+")).filter { it.isNotBlank() }
+    }
 
     /** 说完判定静音时长（毫秒），设置里可调，默认 3 秒。 */
     private fun endSilenceMs(): Long =

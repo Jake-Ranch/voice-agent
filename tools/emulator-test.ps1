@@ -62,8 +62,12 @@ Check 'settings drawer opens' ($log -match '设置抽屉已打开')
 Start-Sleep -Seconds 2
 $l1 = ((& $adb logcat -d -s VoiceAgent:*) -join '')
 Check 'panel not covered by scrim' (-not ($l1 -match '设置抽屉已收起'))
-& $adb shell input tap ([int]($w * 0.35)) 680 2>&1 | Out-Null  # 保存按钮（框里是已有的真实 key）
-Start-Sleep -Seconds 5
+# 收起软键盘（否则布局上移，保存按钮坐标会变）
+& $adb shell input keyevent 4 2>&1 | Out-Null
+Start-Sleep -Seconds 1
+# 保存按钮已固定在抽屉顶部（key 框下方），用已知坐标点击（uiautomator 在无头模拟器上不可靠）
+& $adb shell input tap ([int]($w * 0.35)) 680 2>&1 | Out-Null
+Start-Sleep -Seconds 6
 $l2 = ((& $adb logcat -d -s VoiceAgent:*) -join '')
 Check 'save button starts service' ($l2 -match '语音服务已启动')
 

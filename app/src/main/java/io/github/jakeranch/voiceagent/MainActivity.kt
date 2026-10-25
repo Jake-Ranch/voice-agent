@@ -45,6 +45,10 @@ class MainActivity : Activity() {
     private lateinit var scrim: View
     private lateinit var silLabel: TextView
     private lateinit var keyInput: EditText
+    private lateinit var visionKeyInput: EditText
+    private lateinit var visionModelInput: EditText
+    private lateinit var visionEndpointInput: EditText
+    private lateinit var wakeInput: EditText
     private lateinit var inputToggle: TextView
     private lateinit var textInput: EditText
     private lateinit var inputRow: LinearLayout
@@ -130,11 +134,10 @@ class MainActivity : Activity() {
         }
         main.addView(liveText)
 
-        // ── 设置抽屉（左侧滑出；点外面空白收起）──
+        // ── 设置抽屉（左侧滑出，内容可滚动；点外面空白收起）──
         val panelWidth = (resources.displayMetrics.widthPixels * 0.8f).toInt()
         settingsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad * 3, pad, pad)
             setBackgroundColor(Color.WHITE)
             layoutParams = android.widget.FrameLayout.LayoutParams(
                 panelWidth,
@@ -144,7 +147,20 @@ class MainActivity : Activity() {
             translationX = -panelWidth.toFloat()
             visibility = View.GONE
         }
-        settingsPanel.addView(TextView(this).apply {
+        val settingsContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad * 3, pad, pad)
+        }
+        settingsPanel.addView(
+            ScrollView(this).apply {
+                addView(settingsContent)
+                layoutParams = android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                )
+            },
+        )
+        settingsContent.addView(TextView(this).apply {
             text = "DeepSeek API Key（只存本机）"
             textSize = 14f
             setTextColor(Color.DKGRAY)
@@ -153,30 +169,84 @@ class MainActivity : Activity() {
             setText(getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("deepseek_key", ""))
             setTextColor(Color.BLACK)
         }
-        settingsPanel.addView(keyInput)
-        settingsPanel.addView(Button(this).apply {
-            text = "保存 key 并开启语音管家"
+        settingsContent.addView(keyInput)
+        settingsContent.addView(Button(this).apply {
+            text = "保存并开启语音管家"
             setOnClickListener { saveAndStart() }
         })
-        settingsPanel.addView(Button(this).apply {
+        settingsContent.addView(Button(this).apply {
             text = "停止语音管家"
             setOnClickListener {
                 AgentService.stop(this@MainActivity)
                 refresh()
             }
         })
-        settingsPanel.addView(Button(this).apply {
+        settingsContent.addView(Button(this).apply {
             text = "开启无障碍操作权限"
             setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         })
-        settingsPanel.addView(Button(this).apply {
+        settingsContent.addView(Button(this).apply {
             text = "启用打字通道（一次性，解决高德输入）"
             setOnClickListener {
                 startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
             }
         })
+
+        // ── 视觉模型（看图决策）──
+        settingsContent.addView(TextView(this).apply {
+            text = "视觉模型 API Key（留空=用大脑的 key）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        visionKeyInput = EditText(this).apply {
+            hint = "留空默认用大脑 key"
+            setText(getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("vision_key", ""))
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(visionKeyInput)
+        settingsContent.addView(TextView(this).apply {
+            text = "视觉模型名（默认 deepseek-v4-flash-vision-exp）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        visionModelInput = EditText(this).apply {
+            setText(
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString("vision_model", "deepseek-v4-flash-vision-exp"),
+            )
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(visionModelInput)
+        settingsContent.addView(TextView(this).apply {
+            text = "视觉接口地址（OpenAI 兼容）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        visionEndpointInput = EditText(this).apply {
+            setText(
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString("vision_endpoint", "https://api.deepseek.com/chat/completions"),
+            )
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(visionEndpointInput)
+
+        // ── 自定义唤醒词 ──
+        settingsContent.addView(TextView(this).apply {
+            text = "唤醒词（空格分隔多个，默认 小助手）"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+        })
+        wakeInput = EditText(this).apply {
+            setText(
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString("wake_words", "小助手"),
+            )
+            setTextColor(Color.BLACK)
+        }
+        settingsContent.addView(wakeInput)
 
         // ── 说完判定静音时长（可调）──
         val silRow = LinearLayout(this).apply {
@@ -203,7 +273,7 @@ class MainActivity : Activity() {
             text = "＋"
             setOnClickListener { adjustSilence(0.5f) }
         })
-        settingsPanel.addView(silRow)
+        settingsContent.addView(silRow)
 
         // 遮罩必须先加：FrameLayout 后加的盖在上面，面板要盖在遮罩之上
         scrim = View(this).apply {
@@ -373,7 +443,20 @@ class MainActivity : Activity() {
             return
         }
         getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString("deepseek_key", key).apply()
+            .edit()
+            .putString("deepseek_key", key)
+            .putString("vision_key", visionKeyInput.text.toString().trim())
+            .putString(
+                "vision_model",
+                visionModelInput.text.toString().trim().ifBlank { "deepseek-v4-flash-vision-exp" },
+            )
+            .putString(
+                "vision_endpoint",
+                visionEndpointInput.text.toString().trim()
+                    .ifBlank { "https://api.deepseek.com/chat/completions" },
+            )
+            .putString("wake_words", wakeInput.text.toString().trim().ifBlank { "小助手" })
+            .apply()
         AgentService.start(this)
         refresh()
     }
