@@ -69,6 +69,30 @@ class AgentService : Service() {
                 LogBus.log("forceType '$t' -> $ok")
             }
         }
+        // adb 调试入口：--es op act --es action xxx [...] → 动作入队，与命令串行执行（测试用）
+        if (intent?.getStringExtra("op") == "act") {
+            val action = intent.getStringExtra("action") ?: ""
+            val text = intent.getStringExtra("text") ?: ""
+            val hour = intent.getIntExtra("hour", -1)
+            val minute = intent.getIntExtra("minute", -1)
+            val at = intent.getStringExtra("at") ?: ""
+            val obj = JSONObject().apply {
+                put("action", action)
+                put("text", text)
+                if (hour >= 0) put("hour", hour)
+                if (minute >= 0) put("minute", minute)
+                if (at.isNotEmpty()) {
+                    put("at", at)
+                    put("title", text)
+                }
+            }
+            actQueue.add(obj)
+        }
+        // adb 调试入口：--es op abort → 终止当前任务
+        if (intent?.getStringExtra("op") == "abort") {
+            abort()
+            LogBus.log("调试请求终止")
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
@@ -102,6 +126,7 @@ class AgentService : Service() {
     private suspend fun loop() {
         LocalAsr.ensureInit(this)
         speaker = withContext(Dispatchers.Main) { Speaker(this@AgentService) }
+        WebServer.start()
         LogBus.log("语音服务已启动")
         while (true) {
             updateNotification()
@@ -119,6 +144,12 @@ class AgentService : Service() {
                 processCommand(typed)
                 continue
             }
+            // 0.5) 调试动作钩子（串行执行，测试用）
+            val actObj = actQueue.poll()
+            if (actObj != null) {
+                executeAct(actObj)
+                continue
+            }
             if (!LocalAsr.isReady) {
                 if (LocalAsr.state == "failed") {
                     StateBus.set(StateBus.State.FAULT)
@@ -134,6 +165,11 @@ class AgentService : Service() {
                 val t = textQueue.poll()
                 if (t != null) {
                     processCommand(t)
+                    break
+                }
+                val a = actQueue.poll()
+                if (a != null) {
+                    executeAct(a)
                     break
                 }
                 val wav = recordUtterance(maxIdleSeconds = 15)
@@ -169,6 +205,33 @@ class AgentService : Service() {
         }
     }
 
+    /** 调试动作钩子的执行（与命令串行）。 */
+    private suspend fun executeAct(obj: JSONObject) {
+        val action = obj.optString("action")
+        when (action) {
+            "set_alarm" -> {
+                val minutes = obj.optInt("minute", 0)
+                val msg = if (minutes <= 0) "没听懂要多久后提醒" else setAlarm(minutes)
+                ChatBus.agent(msg)
+                speaker.speak(msg)
+                LogBus.log("act '$action' -> $msg")
+            }
+            "set_alarm_at" -> {
+                val hh = obj.optInt("hour", -1)
+                val mm = obj.optInt("minute", -1)
+                val msg = if (hh < 0 || mm < 0) "没听懂时间" else setAlarmAtTime(hh, mm)
+                ChatBus.agent(msg)
+                speaker.speak(msg)
+                LogBus.log("act '$action' -> $msg")
+            }
+            else -> {
+                val human = performStep(obj)
+                ChatBus.agent(human)
+                LogBus.log("act '$action' -> $human")
+            }
+        }
+    }
+
     private suspend fun processCommand(cmd: String) {
         StateBus.set(StateBus.State.WORKING)
         LogBus.log("正在调用大模型…")
@@ -186,12 +249,16 @@ class AgentService : Service() {
         val brainEndpoint = prefs.getString("brain_endpoint", "").orEmpty()
             .ifBlank { Brain.DEEPSEEK_ENDPOINT }
         // 技能指引 + 长期记忆（每轮自动注入）
-        val skillStr = Skills.match(cmd)?.let { "技能指引：$it\n" } ?: ""
+        val skillStr = Skills.match(cmd)?.let {
+            LogBus.log("技能命中：${it.take(30)}")
+            "技能指引：$it\n"
+        } ?: ""
         val mems = MemoryStore.all(this)
         val memStr = if (mems.isEmpty()) "" else "主人记忆：\n" + mems.joinToString("\n") { "- $it" } + "\n"
         // 多步循环：每轮执行一个动作，把已完成步骤和新屏幕塞回给大模型，直到 done
         val history = StringBuilder()
-        val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // 完整日期时间（大脑需要日期才能正确换算"明天/下周"）
+        val timeFmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm E", java.util.Locale.getDefault())
         var tapStreak = 0
         var stuckStreak = 0
         var lastStepKey = ""
@@ -289,6 +356,15 @@ class AgentService : Service() {
                 beep(ack = false)
                 return
             }
+            if (action == "set_alarm_at") {
+                val hh = obj.optInt("hour", -1)
+                val mm = obj.optInt("minute", -1)
+                val msg = if (hh < 0 || mm < 0) "没听懂时间" else setAlarmAtTime(hh, mm)
+                ChatBus.agent(msg)
+                speaker.speak(msg)
+                beep(ack = false)
+                return
+            }
             val human = performStep(obj)
             ChatBus.agent(human)
             history.append("步骤$step：$human\n")
@@ -326,7 +402,7 @@ class AgentService : Service() {
     /** 执行一个动作，返回人类可读的描述（不进语音，只在气泡显示）。 */
     private fun performStep(obj: JSONObject): String {
         val hands = HandsService.instance
-        val needsHands = obj.optString("action") !in setOf("answer", "done", "remember", "clear_memory")
+        val needsHands = obj.optString("action") !in setOf("answer", "done", "remember", "clear_memory", "add_calendar")
         if (needsHands && hands == null) return "请先开启无障碍权限（设置里的按钮）"
         return when (obj.optString("action")) {
             "remember" -> {
@@ -338,6 +414,26 @@ class AgentService : Service() {
                 MemoryStore.clear(this)
                 "已清空记忆"
             }
+            "call_contact" -> {
+                val t = obj.optString("text")
+                if (hands == null) {
+                    "请先开启无障碍权限（设置里的按钮）"
+                } else {
+                    val num = if (t.matches(Regex("[0-9+]+"))) t else hands.findContactPhone(t)
+                    if (num.isNullOrBlank()) {
+                        LogBus.log("没有找到「$t」的电话")
+                        "没有找到「$t」的电话"
+                    } else if (hands.dialNumber(num)) {
+                        "已打开拨号盘（$num），点一下即可拨出"
+                    } else if (dialFromService(num)) {
+                        "已打开拨号盘（$num），点一下即可拨出"
+                    } else {
+                        LogBus.log("拨号失败：$num")
+                        "拨号失败"
+                    }
+                }
+            }
+            "add_calendar" -> addCalendarEvent(obj)
             "tap_text" -> {
                 val t = obj.optString("text")
                 if (hands?.tapByText(t) == true) "已点击「$t」" else "没有找到要点的按钮"
@@ -401,14 +497,25 @@ class AgentService : Service() {
      * 2) 后台直跳（旧路径）；
      * 3) 通知兜底：点一下通知打开预填好的闹钟。
      */
+    /**
+     * 设置 X 分钟后的闹钟。三级降级：无障碍启动 → 后台直跳 → 通知兜底。
+     */
     private fun setAlarm(minutes: Int): String {
         val viaHands = HandsService.instance?.setAlarm(minutes)
         if (viaHands != null && !viaHands.contains("被拦")) return viaHands
-
         val cal = java.util.Calendar.getInstance()
         cal.add(java.util.Calendar.MINUTE, minutes)
-        val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
-        val mm = cal.get(java.util.Calendar.MINUTE)
+        return setAlarmAtTime(
+            cal.get(java.util.Calendar.HOUR_OF_DAY),
+            cal.get(java.util.Calendar.MINUTE),
+            "已设置 $minutes 分钟后（%02d:%02d）的闹钟",
+        )
+    }
+
+    /** 设置具体时刻（HH:mm）的闹钟（三级降级）。 */
+    private fun setAlarmAtTime(hh: Int, mm: Int, successFmt: String = "已设置 %02d:%02d 的闹钟"): String {
+        val viaHands = HandsService.instance?.setAlarmAt(hh, mm)
+        if (viaHands != null && !viaHands.contains("被拦")) return viaHands
         fun mkIntent(skipUi: Boolean) = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
             .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hh)
             .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, mm)
@@ -416,9 +523,9 @@ class AgentService : Service() {
             .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val auto = try { startActivity(mkIntent(true)); true } catch (e: Exception) { false }
-        if (auto) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
+        if (auto) return String.format(successFmt, hh, mm)
         val ui = try { startActivity(mkIntent(false)); true } catch (e: Exception) { false }
-        if (ui) return "闹钟已预填好（$hh:$mm），点一下保存即可"
+        if (ui) return String.format("闹钟已预填好（%02d:%02d），点一下保存即可", hh, mm)
 
         // 通知兜底：点通知 = 用户主动操作，系统允许打开界面
         return try {
@@ -436,16 +543,88 @@ class AgentService : Service() {
             }
             val n = Notification.Builder(this, "voice_agent_alarm")
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("点击设置 $minutes 分钟后的闹钟")
-                .setContentText("目标时间 $hh:$mm")
+                .setContentTitle("点击设置 %02d:%02d 的闹钟".format(hh, mm))
+                .setContentText("目标时间 %02d:%02d".format(hh, mm))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build()
             nm.notify(9, n)
-            "系统拦了自动跳转，已发通知：点一下通知即可打开预填好的闹钟（$hh:$mm）"
+            "系统拦了自动跳转，已发通知：点一下通知即可打开预填好的闹钟（%02d:%02d）".format(hh, mm)
         } catch (e: Exception) {
             LogBus.log("setAlarm 通知兜底失败：${e.message}")
             "设置闹钟失败"
+        }
+    }
+
+    /** 服务级拨号兜底（无障碍未连接时用）。 */
+    private fun dialFromService(number: String): Boolean = try {
+        startActivity(
+            Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    /** 写系统日历事件（at 格式 yyyy-MM-dd HH:mm）。 */
+    private fun addCalendarEvent(obj: JSONObject): String {
+        val title = obj.optString("title")
+        val at = obj.optString("at")
+        if (title.isBlank() || at.isBlank()) return "日程信息不完整"
+        return try {
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+            val start = fmt.parse(at)?.time ?: return "时间格式不对"
+            // 取第一个日历；没有就建一个"语音管家"本地日历
+            var calId = 1L
+            runCatching {
+                var cur = contentResolver.query(
+                    android.provider.CalendarContract.Calendars.CONTENT_URI,
+                    arrayOf(android.provider.CalendarContract.Calendars._ID),
+                    null, null, null,
+                )
+                if (cur != null && cur.moveToFirst()) {
+                    calId = cur.getLong(0)
+                    cur.close()
+                } else {
+                    cur?.close()
+                    val calValues = android.content.ContentValues().apply {
+                        put(android.provider.CalendarContract.Calendars.ACCOUNT_NAME, "local")
+                        put(android.provider.CalendarContract.Calendars.ACCOUNT_TYPE, "LOCAL")
+                        put(android.provider.CalendarContract.Calendars.NAME, "语音管家")
+                        put(android.provider.CalendarContract.Calendars.CALENDAR_DISPLAY_NAME, "语音管家")
+                        put(
+                            android.provider.CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+                            android.provider.CalendarContract.Calendars.CAL_ACCESS_OWNER,
+                        )
+                        put(
+                            android.provider.CalendarContract.Calendars.SYNC_EVENTS,
+                            1,
+                        )
+                        put(android.provider.CalendarContract.Calendars.VISIBLE, 1)
+                    }
+                    val newUri = contentResolver.insert(
+                        android.provider.CalendarContract.Calendars.CONTENT_URI,
+                        calValues,
+                    )
+                    if (newUri != null) calId = newUri.lastPathSegment?.toLongOrNull() ?: 1L
+                }
+            }
+            val values = android.content.ContentValues().apply {
+                put(android.provider.CalendarContract.Events.CALENDAR_ID, calId)
+                put(android.provider.CalendarContract.Events.TITLE, title)
+                put(android.provider.CalendarContract.Events.DTSTART, start)
+                put(android.provider.CalendarContract.Events.DTEND, start + 60 * 60 * 1000)
+                put(
+                    android.provider.CalendarContract.Events.EVENT_TIMEZONE,
+                    java.util.TimeZone.getDefault().id,
+                )
+            }
+            val uri = contentResolver.insert(android.provider.CalendarContract.Events.CONTENT_URI, values)
+            if (uri != null) "已添加日程：$title（$at）" else "添加日程失败"
+        } catch (e: Exception) {
+            LogBus.log("日历插入失败：${e.message}")
+            "添加日程失败（需要日历权限）"
         }
     }
 
@@ -658,6 +837,8 @@ class AgentService : Service() {
         }
 
         private val textQueue = ConcurrentLinkedQueue<String>()
+
+        private val actQueue = ConcurrentLinkedQueue<JSONObject>()
 
         /** 键盘模式提交文本指令（不用唤醒）。 */
         fun submitText(text: String) {

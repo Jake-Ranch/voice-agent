@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.jakeranch.voiceagent"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.5.0"
+        versionCode = 8
+        versionName = "0.6.0"
         ndk { abiFilters += listOf((project.findProperty("abi") as String?) ?: "arm64-v8a") }
         manifestPlaceholders["agentServiceExported"] =
             (project.findProperty("exportService") as String?) ?: "false"

@@ -388,20 +388,56 @@ class HandsService : AccessibilityService() {
     fun setAlarm(minutes: Int): String {
         val cal = java.util.Calendar.getInstance()
         cal.add(java.util.Calendar.MINUTE, minutes)
-        val hh = cal.get(java.util.Calendar.HOUR_OF_DAY)
-        val mm = cal.get(java.util.Calendar.MINUTE)
+        return setAlarmAt(
+            cal.get(java.util.Calendar.HOUR_OF_DAY),
+            cal.get(java.util.Calendar.MINUTE),
+            "已设置 $minutes 分钟后（%02d:%02d）的闹钟",
+        )
+    }
+
+    /** 设置具体时刻（HH:mm）的闹钟。返回人类可读结果。 */
+    fun setAlarmAt(hour: Int, minute: Int, successFmt: String = "已设置 %02d:%02d 的闹钟"): String {
         fun mkIntent(skipUi: Boolean): Intent =
             Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
-                .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hh)
-                .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, mm)
+                .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+                .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
                 .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "语音管家提醒")
                 .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        // 1) 全自动（部分手机的时钟支持免确认）
-        if (launchAlarm(mkIntent(true))) return "已设置 $minutes 分钟后（$hh:$mm）的闹钟"
-        // 2) 预填好时间的编辑页（点一下保存）
-        if (launchAlarm(mkIntent(false))) return "闹钟已预填好（$hh:$mm），点一下保存即可"
+        if (launchAlarm(mkIntent(true))) return String.format(successFmt, hour, minute)
+        if (launchAlarm(mkIntent(false))) return String.format("闹钟已预填好（%02d:%02d），点一下保存即可", hour, minute)
         return "闹钟界面被拦"
+    }
+
+    /** 打开拨号盘（预填号码，用户点一下即拨出）。 */
+    fun dialNumber(number: String): Boolean = try {
+        startActivity(
+            Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    /** 按名字找联系人的电话号码。 */
+    fun findContactPhone(name: String): String? {
+        return try {
+            val uri = android.net.Uri.withAppendedPath(
+                android.provider.ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                android.net.Uri.encode(name),
+            )
+            val cur = contentResolver.query(
+                uri,
+                arrayOf(android.provider.ContactsContract.PhoneLookup.NUMBER),
+                null, null, null,
+            ) ?: return null
+            val num = if (cur.moveToFirst()) cur.getString(0) else null
+            cur.close()
+            num
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun launchAlarm(i: Intent): Boolean = try {

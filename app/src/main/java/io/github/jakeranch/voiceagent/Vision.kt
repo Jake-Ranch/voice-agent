@@ -27,6 +27,11 @@ object Vision {
         {"action":"done","text":"简短总结"} 任务完成，text 会被朗读
         {"action":"answer","text":"回答"} 只回答问题、不动手机
         {"action":"set_alarm","minutes":35} 主人要求"X分钟后/小时后叫醒我/提醒我"时用
+        {"action":"set_alarm_at","hour":7,"minute":30} 具体时刻提醒时用
+        {"action":"add_calendar","title":"事项","at":"2026-10-27 10:00"} 写日历日程
+        {"action":"call_contact","text":"联系人名或号码"} 打电话
+        {"action":"remember","text":"内容"} 记住偏好/事实
+        {"action":"clear_memory"} 清空记忆
         {"action":"tap_xy","x":0.5,"y":0.5} 按比例坐标点击（0-1，坐标从截图实际位置估算）
         {"action":"tap_text","text":"屏幕上的文字"} 点击包含该文字的元素
         {"action":"type","text":"要输入的内容"} 输入文字（先点击输入框再 type，输完如需确认用 enter）

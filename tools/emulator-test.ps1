@@ -22,6 +22,9 @@ Start-Sleep -Seconds 2
 & $adb install -r $apk 2>&1 | Out-Null
 & $adb shell pm grant $pkg android.permission.RECORD_AUDIO 2>&1 | Out-Null
 & $adb shell pm grant $pkg android.permission.POST_NOTIFICATIONS 2>&1 | Out-Null
+& $adb shell pm grant $pkg android.permission.WRITE_CALENDAR 2>&1 | Out-Null
+& $adb shell pm grant $pkg android.permission.READ_CALENDAR 2>&1 | Out-Null
+& $adb shell pm grant $pkg android.permission.READ_CONTACTS 2>&1 | Out-Null
 & $adb shell settings put secure enabled_accessibility_services "$pkg/$pkg.HandsService" 2>&1 | Out-Null
 & $adb shell settings put secure accessibility_enabled 1 2>&1 | Out-Null
 $bound = ''
@@ -108,6 +111,55 @@ for ($i = 0; $i -lt 12; $i++) {
 Check 'text command processed' $done
 $top = ((& $adb shell dumpsys activity activities | Select-String -Pattern 'topResumedActivity') -join '').Trim()
 Check 'maps opened by agent' ($top -match 'com.google.android.apps.maps')
+
+# 8) 技能库：导航指令应命中技能指引
+& $adb logcat -c 2>&1 | Out-Null
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es text '导航去西湖'" 2>&1 | Out-Null
+$skilled = $false
+for ($i = 0; $i -lt 8; $i++) {
+    $l = ((& $adb logcat -d -s VoiceAgent:*) -join '')
+    if ($l -match '技能命中') { $skilled = $true; break }
+    Start-Sleep -Seconds 4
+}
+Check 'skill prompt matched' $skilled
+
+# 9) 拨号：call_contact 应打开系统拨号盘（先终止旧任务，再串行执行动作）
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op abort" 2>&1 | Out-Null
+& $adb shell am force-stop com.google.android.dialer 2>&1 | Out-Null
+Start-Sleep -Seconds 4
+& $adb logcat -c 2>&1 | Out-Null
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op act --es action call_contact --es text 10086" 2>&1 | Out-Null
+Start-Sleep -Seconds 10
+$top9 = ((& $adb shell dumpsys activity activities | Select-String -Pattern 'topResumedActivity') -join '').Trim()
+Check 'dialer opened by call_contact' ($top9 -match 'dialer|Dialer|incallui|InCall|telecom')
+& $adb shell input keyevent 4 2>&1 | Out-Null
+
+# 10) 日历：add_calendar 动作执行（模拟器无日历账号，验证动作链路；真机由小米日历承接）
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op abort" 2>&1 | Out-Null
+Start-Sleep -Seconds 3
+& $adb logcat -c 2>&1 | Out-Null
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op act --es action add_calendar --es text '测试会议' --es at '2026-12-01 10:00'" 2>&1 | Out-Null
+Start-Sleep -Seconds 10
+$calLog = ((& $adb logcat -d -s VoiceAgent:*) -join '')
+Check 'calendar action executed' ($calLog -match "act 'add_calendar' -> 已添加日程")
+
+# 11) 定时提醒：set_alarm_at 应建系统闹钟（钩子直测）
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op abort" 2>&1 | Out-Null
+Start-Sleep -Seconds 3
+& $adb logcat -c 2>&1 | Out-Null
+& $adb shell "am start-foreground-service -n $pkg/.AgentService --es op act --es action set_alarm_at --ei hour 7 --ei minute 30" 2>&1 | Out-Null
+Start-Sleep -Seconds 10
+$alarmLog = ((& $adb logcat -d -s VoiceAgent:*) -join '')
+Check 'set_alarm_at executed' ($alarmLog -match "act 'set_alarm_at' -> 已设置|闹钟已预填|已发通知")
+
+# 12) 网页控制台：HTTP 服务应响应
+& $adb forward tcp:8765 tcp:8765 2>&1 | Out-Null
+Start-Sleep -Seconds 2
+$web = $null
+try {
+    $web = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/chat' -UseBasicParsing -TimeoutSec 8
+} catch { }
+Check 'web console responds' ($null -ne $web -and $web.StatusCode -eq 200)
 
 Write-Output "===== RESULT: $fail failure(s) ====="
 exit $fail

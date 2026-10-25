@@ -68,6 +68,15 @@ class MainActivity : Activity() {
                 this, Manifest.permission.POST_NOTIFICATIONS,
             ) != PackageManager.PERMISSION_GRANTED
         ) need.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR) !=
+            PackageManager.PERMISSION_GRANTED
+        ) need.add(Manifest.permission.WRITE_CALENDAR)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) !=
+            PackageManager.PERMISSION_GRANTED
+        ) need.add(Manifest.permission.READ_CALENDAR)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) need.add(Manifest.permission.READ_CONTACTS)
         if (need.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, need.toTypedArray(), REQ_PERMS)
         }
