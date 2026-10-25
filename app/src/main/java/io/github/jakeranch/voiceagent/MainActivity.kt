@@ -171,6 +171,12 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         })
+        settingsPanel.addView(Button(this).apply {
+            text = "启用打字通道（一次性，解决高德输入）"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            }
+        })
 
         // ── 说完判定静音时长（可调）──
         val silRow = LinearLayout(this).apply {

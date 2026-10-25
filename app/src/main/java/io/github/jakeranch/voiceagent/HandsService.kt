@@ -123,16 +123,19 @@ class HandsService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    /** 在当前输入框输入文字（多策略：焦点框 → 任意可编辑节点 → 剪贴板粘贴）。 */
+    /** 在当前输入框输入文字（多策略：焦点框 → 任意可编辑节点 → 剪贴板粘贴 → 输入法切换）。 */
     fun typeText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-        // 1) 有焦点的输入框
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (focused != null && setTextOn(focused, text)) return true
-        // 2) 任意可见的可编辑节点（高德等自定义搜索框不报告焦点）
-        val editable = findEditable(root)
-        if (editable != null && setTextOn(editable, text)) return true
-        return false
+        val root = rootInActiveWindow
+        if (root != null) {
+            // 1) 有焦点的输入框
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focused != null && setTextOn(focused, text)) return true
+            // 2) 任意可见的可编辑节点（高德等自定义搜索框不报告焦点）
+            val editable = findEditable(root)
+            if (editable != null && setTextOn(editable, text)) return true
+        }
+        // 3) 自绘搜索框：无障碍树里没有输入节点 → 直接走输入法切换通道
+        return typeViaIme(text)
     }
 
     private fun setTextOn(node: AccessibilityNodeInfo, text: String): Boolean {
@@ -155,7 +158,64 @@ class HandsService : AccessibilityService() {
         } catch (e: Exception) {
         }
         // 3) Android 13+ 官方输入法通道注入（对高德等自定义搜索框最有效）
-        return injectViaIme(node, text)
+        if (injectViaIme(node, text)) return true
+        // 4) 终极：切到我们自己的输入法提交再切回（自绘搜索框也能进）
+        return typeViaIme(text)
+    }
+
+    /**
+     * 终极输入方案：把活动输入法切到"语音管家键盘"，提交文字后切回。
+     * 要求用户曾在系统里启用过它一次（否则 AgentImeService.instance 为空）。
+     */
+    fun typeViaIme(text: String): Boolean {
+        val svc = AgentImeService.instance ?: run {
+            // 键盘服务没在跑：弹输入法选择器让用户点一次（点完 pendingText 自动提交）
+            AgentImeService.pendingText = text
+            LogBus.log("输入法通道未绑定，已弹出输入法选择器，用户点选后自动提交")
+            runCatching {
+                val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                    as android.view.inputmethod.InputMethodManager
+                imm.showInputMethodPicker()
+            }
+            return true // 已安排提交（等用户点选），避免 agent 死循环重试
+        }
+        // 已有活跃输入连接：直接提交（连续输入时最常用）
+        val live = svc.currentInputConnection
+        if (live != null) {
+            return try {
+                live.commitText(text, 1)
+                LogBus.log("输入法通道提交成功（直连）：$text")
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+        val token = svc.token ?: return false
+        return try {
+            val cr = contentResolver
+            val prev = android.provider.Settings.Secure.getString(
+                cr, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD,
+            ).orEmpty()
+            AgentImeService.pendingText = text
+            val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            val m = android.view.inputmethod.InputMethodManager::class.java
+                .getDeclaredMethod(
+                    "setInputMethod",
+                    android.os.IBinder::class.java,
+                    String::class.java,
+                )
+            m.isAccessible = true
+            m.invoke(imm, token, "$packageName/.AgentImeService")
+            // 等提交完成后切回用户原来的输入法
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runCatching { m.invoke(imm, token, prev) }
+            }, 900)
+            true
+        } catch (e: Exception) {
+            LogBus.log("输入法切换失败：${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
     }
 
     /** API 33+：伪装成输入法直接 commitText（官方 AccessibilityInputConnection）。 */

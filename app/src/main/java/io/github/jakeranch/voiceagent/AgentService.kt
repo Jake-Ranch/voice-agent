@@ -52,10 +52,22 @@ class AgentService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // 调试：打印收到的 extras
+        if (intent?.extras != null) {
+            LogBus.log("收到 extras: ${intent.extras}")
+        }
         // adb 调试入口：am start-foreground-service ... --es text "指令"
         val typed = intent?.getStringExtra("text")
         if (!typed.isNullOrBlank()) {
             submitText(typed)
+        }
+        // adb 调试入口：--es op forceType --es text xxx → 直接测输入注入
+        if (intent?.getStringExtra("op") == "forceType") {
+            val t = intent.getStringExtra("text") ?: ""
+            scope.launch {
+                val ok = HandsService.instance?.typeText(t) == true
+                LogBus.log("forceType '$t' -> $ok")
+            }
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -450,16 +462,27 @@ class AgentService : Service() {
             val partialBusy = java.util.concurrent.atomic.AtomicBoolean(false)
             try {
                 rec.startRecording()
+                val bb = java.nio.ByteBuffer.allocateDirect(buf.size * 2)
                 while (System.currentTimeMillis() - startAt < maxIdleSeconds * 1000L) {
                     if (abortFlag) break
-                    val n = rec.read(buf, 0, buf.size)
-                    if (n <= 0) continue
+                    bb.clear()
+                    // 非阻塞读：避免坏音频设备上 read() 永久卡死（文本指令会跟着饿死）
+                    val n = rec.read(bb, buf.size * 2, android.media.AudioRecord.READ_NON_BLOCKING)
+                    if (n <= 0) {
+                        // 本帧没数据：当作静音推进端点判定
+                        if (speechSeen && System.currentTimeMillis() - lastSpeechAt > endSilenceMs()) break
+                        Thread.sleep(100)
+                        continue
+                    }
+                    bb.flip()
                     var sum = 0.0
-                    for (i in 0 until n) {
-                        val v = buf[i].toDouble()
+                    val samples = n / 2
+                    for (i in 0 until samples) {
+                        val v = bb.short.toDouble()
+                        buf[i] = bb.short
                         sum += v * v
                     }
-                    val rms = kotlin.math.sqrt(sum / n)
+                    val rms = if (samples > 0) kotlin.math.sqrt(sum / samples) else 0.0
                     // 自适应噪声底：只在不说话的低电平帧更新，躺着远距离轻声也能触发
                     if (!speechSeen && rms < 800) {
                         noiseFloor = noiseFloor * 0.95 + rms * 0.05
@@ -471,7 +494,7 @@ class AgentService : Service() {
                         lastSpeechAt = System.currentTimeMillis()
                     }
                     if (speechSeen) {
-                        for (i in 0 until n) {
+                        for (i in 0 until samples) {
                             val s = buf[i].toInt()
                             out.write(s and 0xFF)
                             out.write((s shr 8) and 0xFF)
